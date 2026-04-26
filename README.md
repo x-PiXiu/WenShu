@@ -94,25 +94,25 @@
 ### 藏书阁（智能问答）
 
 <!-- 截图占位：藏书阁主页面 -->
-![藏书阁主页面](.\docs\screenshots\chat-main.png)
+![藏书阁主页面](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/chat-main.png)
 
 ### 知识库（文档管理）
 
 <!-- 截图占位：知识库文件列表 -->
-![知识库文件列表](.\docs\screenshots\knowledge-list.png)
+![知识库文件列表]([https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/knowledge-list.png)
 
 ### A2A 节点
 
 <!-- 截图占位：A2A Agent 卡片 -->
-![A2A Agent 卡片](.\docs\screenshots\a2a-agent.png)
+![A2A Agent 卡片](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/a2a-agent.png)
 
 ### 设置
 
 <!-- 截图占位：LLM 配置 -->
-![LLM 配置](.\docs\screenshots\settings-llm.png)
+![LLM 配置](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/settings-llm.png)
 
 <!-- 截图占位：智能体管理 -->
-![智能体管理](.\docs\screenshots\settings-agents.png)
+![智能体管理](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/settings-agents.png)
 
 ---
 
