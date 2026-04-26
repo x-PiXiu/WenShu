@@ -99,7 +99,7 @@
 ### 知识库（文档管理）
 
 <!-- 截图占位：知识库文件列表 -->
-![知识库文件列表]([https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/knowledge-list.png)
+![知识库文件列表](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/knowledge-list.png)
 
 ### A2A 节点
 
