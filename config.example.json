@@ -1,0 +1,69 @@
+{
+  "llm" : {
+    "provider" : "minimax",
+    "baseUrl" : "https://api.minimax.chat/v1",
+    "apiKey" : "YOUR_LLM_API_KEY_HERE",
+    "modelName" : "MiniMax-M2.5",
+    "temperature" : 0.7,
+    "maxTokens" : 32768,
+    "streaming" : true
+  },
+  "embedding" : {
+    "provider" : "zhipu",
+    "baseUrl" : "https://open.bigmodel.cn/api/paas/v4",
+    "apiKey" : "YOUR_EMBEDDING_API_KEY_HERE",
+    "modelName" : "embedding-3"
+  },
+  "vectorStore" : {
+    "type" : "memory",
+    "chromaBaseUrl" : "http://localhost:8000",
+    "collectionName" : "rag_knowledge_base",
+    "milvusHost" : "YOUR_MILVUS_HOST",
+    "milvusPort" : 19530,
+    "embeddingDimension" : 2048
+  },
+  "rag" : {
+    "chunkSize" : 200,
+    "chunkOverlap" : 30,
+    "vectorTopK" : 5,
+    "keywordTopK" : 10,
+    "rrfK" : 60.0,
+    "minScore" : 0.3
+  },
+  "a2a" : {
+    "enabled" : true,
+    "agentName" : "WenShu Agent",
+    "agentDescription" : "基于 RAG 的智能知识库问答 Agent，支持混合检索（向量+关键词）、动态 LLM/Embedding 切换、多种向量存储后端，兼容 A2A 协议实现跨 Agent 协作"
+  },
+  "documentTypes" : [ {
+    "name" : "GENERAL",
+    "label" : "通用文档",
+    "chunkSize" : 200,
+    "chunkOverlap" : 50
+  }, {
+    "name" : "TECHNICAL",
+    "label" : "技术文档",
+    "chunkSize" : 300,
+    "chunkOverlap" : 100
+  }, {
+    "name" : "FAQ",
+    "label" : "FAQ/问答对",
+    "chunkSize" : 256,
+    "chunkOverlap" : 20
+  }, {
+    "name" : "LOG",
+    "label" : "日志/结构化数据",
+    "chunkSize" : 512,
+    "chunkOverlap" : 50
+  }, {
+    "name" : "ARTICLE",
+    "label" : "长文/手册",
+    "chunkSize" : 1024,
+    "chunkOverlap" : 150
+  }, {
+    "name" : "TEST",
+    "label" : "测试",
+    "chunkSize" : 512,
+    "chunkOverlap" : 50
+  } ]
+}
