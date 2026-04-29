@@ -6,6 +6,7 @@
     </div>
 
     <div v-if="posts.length === 0" class="empty-state">暂无文章，点击「新建文章」开始创作</div>
+    <div v-if="errorMessage" class="list-error">{{ errorMessage }}</div>
 
     <div class="post-list" v-else>
       <div v-for="post in posts" :key="post.id" class="post-row">
@@ -56,6 +57,7 @@ const posts = ref<Article[]>([])
 const page = ref(1)
 const total = ref(0)
 const totalPages = ref(1)
+const errorMessage = ref('')
 
 function statusLabel(status: string): string {
   return status === 'draft' ? '草稿' : status === 'published' ? '已发布' : '已归档'
@@ -66,29 +68,53 @@ function formatDate(ts: number): string {
 }
 
 async function load() {
-  const result = await listAllPosts(page.value)
-  if (result) {
-    posts.value = result.items
-    total.value = result.total
-    totalPages.value = Math.ceil(result.total / 20)
+  errorMessage.value = ''
+  try {
+    const result = await listAllPosts(page.value)
+    if (result) {
+      posts.value = result.items
+      total.value = result.total
+      totalPages.value = Math.ceil(result.total / 20)
+    }
+  } catch (error) {
+    errorMessage.value = getErrorMessage(error, '加载文章列表失败')
   }
 }
 
 async function doDelete(id: string) {
   if (confirm('确定删除此文章？')) {
-    await deletePost(id)
-    load()
+    try {
+      errorMessage.value = ''
+      await deletePost(id)
+      load()
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error, '删除文章失败')
+    }
   }
 }
 
 async function doPublish(id: string) {
-  await publishPost(id)
-  load()
+  try {
+    errorMessage.value = ''
+    await publishPost(id)
+    load()
+  } catch (error) {
+    errorMessage.value = getErrorMessage(error, '发布文章失败')
+  }
 }
 
 async function doUnpublish(id: string) {
-  await unpublishPost(id)
-  load()
+  try {
+    errorMessage.value = ''
+    await unpublishPost(id)
+    load()
+  } catch (error) {
+    errorMessage.value = getErrorMessage(error, '取消发布失败')
+  }
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
 }
 
 onMounted(load)
@@ -107,6 +133,12 @@ onMounted(load)
   background: #D97B2B; color: #FFFFFF; font-size: 13px; font-weight: 500; cursor: pointer;
 }
 .btn-primary:hover { background: #C06A1E; }
+
+.list-error {
+  padding: 10px 12px; margin-bottom: 12px; border-radius: 8px;
+  background: #FFF0F0; color: #C93A3A; border: 1px solid #FFD0D0;
+  font-size: 13px;
+}
 
 .post-list { display: flex; flex-direction: column; gap: 8px; }
 .post-row {

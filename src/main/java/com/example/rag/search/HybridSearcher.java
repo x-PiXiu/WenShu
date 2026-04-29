@@ -78,6 +78,18 @@ public class HybridSearcher {
         return rrfFusion(vectorResults, keywordResults);
     }
 
+    /**
+     * 混合搜索（按 source 前缀过滤）
+     */
+    public List<SearchResult> search(String query, String sourcePrefix) {
+        List<EmbeddingMatch<TextSegment>> vectorResults = vectorSearch(query);
+        List<KeywordMatch> keywordResults = keywordSearch(query);
+        List<SearchResult> all = rrfFusion(vectorResults, keywordResults);
+        return all.stream()
+                .filter(r -> r.source().startsWith(sourcePrefix))
+                .toList();
+    }
+
     List<EmbeddingMatch<TextSegment>> vectorSearch(String query) {
         Embedding queryEmbedding;
         synchronized (embeddingCache) {
@@ -186,6 +198,36 @@ public class HybridSearcher {
                 // Results must have at least some vector similarity support
                 .filter(r -> r.vectorScore() > 0)
                 .toList();
+    }
+
+    /**
+     * 移除指定 source 前缀的所有段落索引
+     */
+    public void removeSegmentsBySource(String sourcePrefix) {
+        List<String> toRemove = new ArrayList<>();
+        for (Map.Entry<String, String> entry : segmentSourceMap.entrySet()) {
+            if (entry.getValue().startsWith(sourcePrefix)) {
+                toRemove.add(entry.getKey());
+            }
+        }
+        for (String segId : toRemove) {
+            String text = segmentTextMap.remove(segId);
+            segmentSourceMap.remove(segId);
+            totalSegments--;
+            if (text != null) {
+                Set<String> terms = tokenize(text);
+                for (String term : terms) {
+                    List<String> ids = invertedIndex.get(term);
+                    if (ids != null) {
+                        ids.remove(segId);
+                        if (ids.isEmpty()) {
+                            invertedIndex.remove(term);
+                        }
+                        docFrequency.merge(term, -1, (old, delta) -> old + delta <= 0 ? null : old + delta);
+                    }
+                }
+            }
+        }
     }
 
     private Set<String> tokenize(String text) {

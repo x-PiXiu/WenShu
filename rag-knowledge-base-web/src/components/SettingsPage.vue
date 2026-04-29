@@ -358,21 +358,21 @@ function onProviderChange(type: 'llm' | 'embedding', provider: string) {
 
 function onTypeNameChange(idx: number, newName: string) {
   const upper = newName.toUpperCase().replace(/[^A-Z0-9_]/g, '')
-  form.documentTypes[idx].name = upper
+  form.documentTypes![idx].name = upper
 }
 
 function addDocType() {
   const name = newTypeName.value.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '')
   const label = newTypeLabel.value.trim()
   if (!name || !label) return
-  if (form.documentTypes.some(dt => dt.name === name)) return
-  form.documentTypes.push({ name, label, chunkSize: 512, chunkOverlap: 50 })
+  if (form.documentTypes!.some(dt => dt.name === name)) return
+  form.documentTypes!.push({ name, label, chunkSize: 512, chunkOverlap: 50 })
   newTypeName.value = ''
   newTypeLabel.value = ''
 }
 
 function removeDocType(idx: number) {
-  form.documentTypes.splice(idx, 1)
+  form.documentTypes!.splice(idx, 1)
 }
 
 watch(() => settings.value, (s) => {

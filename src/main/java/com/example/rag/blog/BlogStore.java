@@ -20,6 +20,12 @@ public class BlogStore {
     private static final int POOL_SIZE = 2;
     private static final BlockingQueue<Connection> pool = new LinkedBlockingQueue<>(POOL_SIZE);
 
+    private volatile BlogIndexer blogIndexer;
+
+    public void setBlogIndexer(BlogIndexer blogIndexer) {
+        this.blogIndexer = blogIndexer;
+    }
+
     static {
         for (int i = 0; i < POOL_SIZE; i++) {
             try {
@@ -119,65 +125,78 @@ public class BlogStore {
 
     // ===== Article CRUD =====
 
-    public Article createArticle(String title, String content, String contentType, String category, List<String> tags) {
+    public Article createArticle(String title, String content, String contentType, String category, List<String> tags, String summary, String coverImage) {
         String id = "post-" + UUID.randomUUID().toString().substring(0, 8);
         String slug = generateSlug(title);
         long now = System.currentTimeMillis();
         int wordCount = content != null ? content.length() : 0;
         String tagsJson = serializeTags(tags);
 
-        String sql = "INSERT INTO blog_article (id, title, slug, content, content_type, category, tags, status, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)";
+        String sql = "INSERT INTO blog_article (id, title, slug, summary, content, content_type, category, tags, cover_image, status, word_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)";
 
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, id);
             ps.setString(2, title);
             ps.setString(3, slug);
-            ps.setString(4, content);
-            ps.setString(5, contentType != null ? contentType : "md");
-            ps.setString(6, category);
-            ps.setString(7, tagsJson);
-            ps.setInt(8, wordCount);
-            ps.setLong(9, now);
-            ps.setLong(10, now);
+            ps.setString(4, summary);
+            ps.setString(5, content);
+            ps.setString(6, contentType != null ? contentType : "md");
+            ps.setString(7, category);
+            ps.setString(8, tagsJson);
+            ps.setString(9, coverImage);
+            ps.setInt(10, wordCount);
+            ps.setLong(11, now);
+            ps.setLong(12, now);
             ps.executeUpdate();
-            return new Article(id, title, slug, null, content, contentType != null ? contentType : "md",
-                    category, tags, null, "draft", false, 0, wordCount, null, now, now);
+            return new Article(id, title, slug, summary, content, contentType != null ? contentType : "md",
+                    category, tags, coverImage, "draft", false, 0, wordCount, null, now, now);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to create article: " + e.getMessage(), e);
         }
     }
 
-    public Article updateArticle(String id, String title, String content, String category, List<String> tags) {
+    public Article updateArticle(String id, String title, String content, String category, List<String> tags, String summary, String coverImage) {
         long now = System.currentTimeMillis();
         int wordCount = content != null ? content.length() : 0;
         String tagsJson = serializeTags(tags);
 
-        String sql = "UPDATE blog_article SET title = ?, content = ?, category = ?, tags = ?, word_count = ?, updated_at = ? WHERE id = ?";
+        String sql = "UPDATE blog_article SET title = ?, summary = ?, content = ?, category = ?, tags = ?, cover_image = ?, word_count = ?, updated_at = ? WHERE id = ?";
 
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, title);
-            ps.setString(2, content);
-            ps.setString(3, category);
-            ps.setString(4, tagsJson);
-            ps.setInt(5, wordCount);
-            ps.setLong(6, now);
-            ps.setString(7, id);
+            ps.setString(2, summary);
+            ps.setString(3, content);
+            ps.setString(4, category);
+            ps.setString(5, tagsJson);
+            ps.setString(6, coverImage);
+            ps.setInt(7, wordCount);
+            ps.setLong(8, now);
+            ps.setString(9, id);
             if (ps.executeUpdate() == 0) throw new RuntimeException("Article not found: " + id);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to update article: " + e.getMessage(), e);
         }
-        return getById(id);
+        Article article = getById(id);
+        if (article != null && "published".equals(article.status()) && blogIndexer != null) {
+            blogIndexer.removeArticle(article.slug());
+            blogIndexer.indexArticle(article);
+        }
+        return article;
     }
 
     public void deleteArticle(String id) {
+        Article article = getById(id);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement("DELETE FROM blog_article WHERE id = ?")) {
             ps.setString(1, id);
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new RuntimeException("Failed to delete article: " + e.getMessage(), e);
+        }
+        if (article != null && "published".equals(article.status()) && blogIndexer != null) {
+            blogIndexer.removeArticle(article.slug());
         }
     }
 
@@ -195,10 +214,15 @@ public class BlogStore {
         } catch (SQLException e) {
             throw new RuntimeException("Failed to publish article: " + e.getMessage(), e);
         }
-        return getById(id);
+        Article article = getById(id);
+        if (article != null && blogIndexer != null) {
+            blogIndexer.indexArticle(article);
+        }
+        return article;
     }
 
     public Article unpublishArticle(String id) {
+        Article article = getById(id);
         long now = System.currentTimeMillis();
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
@@ -208,6 +232,9 @@ public class BlogStore {
             if (ps.executeUpdate() == 0) throw new RuntimeException("Article not found: " + id);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to unpublish article: " + e.getMessage(), e);
+        }
+        if (article != null && blogIndexer != null) {
+            blogIndexer.removeArticle(article.slug());
         }
         return getById(id);
     }

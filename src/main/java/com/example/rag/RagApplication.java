@@ -4,12 +4,16 @@ import com.example.rag.a2a.AgentCard;
 import com.example.rag.a2a.Task;
 import com.example.rag.a2a.TaskManager;
 import com.example.rag.blog.AuthFilter;
+import com.example.rag.blog.BlogIndexer;
 import com.example.rag.blog.BlogStore;
+import com.example.rag.blog.MediaStore;
 import com.example.rag.chat.AgentStore;
 import com.example.rag.chat.ChatStore;
 import com.example.rag.config.AppConfiguration;
+import com.example.rag.parser.AutoDocumentParser;
 import com.example.rag.service.RagService;
 import com.fasterxml.jackson.core.type.TypeReference;
+import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.output.Response;
@@ -49,6 +53,8 @@ public class RagApplication {
     private static ChatStore chatStore;
     private static AgentStore agentStore;
     private static BlogStore blogStore;
+    private static BlogIndexer blogIndexer;
+    private static MediaStore mediaStore;
     private static AuthFilter authFilter;
 
     public static void main(String[] args) {
@@ -77,6 +83,9 @@ public class RagApplication {
         chatStore = new ChatStore();
         agentStore = new AgentStore();
         blogStore = new BlogStore();
+        blogIndexer = new BlogIndexer(ragService);
+        blogStore.setBlogIndexer(blogIndexer);
+        mediaStore = new MediaStore();
         authFilter = new AuthFilter(config.getBlog().adminPassword);
         int port = config.getServer().port;
 
@@ -90,6 +99,16 @@ public class RagApplication {
         Javalin app = Javalin.create(javalinConfig -> {
             javalinConfig.bundledPlugins.enableCors(cors -> {
                 cors.addRule(it -> it.anyHost());
+            });
+            javalinConfig.staticFiles.add("uploads", io.javalin.http.staticfiles.Location.EXTERNAL);
+            javalinConfig.requestLogger.http((ctx, ms) -> {
+                String method = ctx.method().toString();
+                String path = ctx.path();
+                int status = ctx.statusCode();
+                String log = String.format("[HTTP] %s %s -> %d (%.0fms)", method, path, status, ms);
+                if (status >= 500) System.err.println(log);
+                else if (status >= 400) System.out.println("[WARN] " + log);
+                else System.out.println(log);
             });
             javalinConfig.showJavalinBanner = false;
         });
@@ -375,6 +394,82 @@ public class RagApplication {
             ));
         });
 
+        // --- Blog Chat API ---
+        app.post("/api/blog/chat", ctx -> {
+            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
+            String question = body.get("question");
+            if (question == null || question.isBlank()) {
+                ctx.status(400).json(Map.of("error", "question is required"));
+                return;
+            }
+            try {
+                RagService.RagAnswer answer = ragService.askBlog(question, List.of(), null);
+                ctx.json(Map.of("answer", answer.answer(), "sources", answer.sources()));
+            } catch (Exception e) {
+                ctx.status(500).json(Map.of("error", "Failed to process question: " + e.getMessage()));
+            }
+        });
+
+        app.post("/api/blog/chat/stream", ctx -> {
+            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
+            String question = body.get("question");
+            if (question == null || question.isBlank()) {
+                ctx.status(400).json(Map.of("error", "question is required"));
+                return;
+            }
+
+            RagService.StreamContext streamCtx = ragService.prepareBlogStreamContext(question, List.of(), null);
+
+            ctx.res().setContentType("text/event-stream; charset=UTF-8");
+            ctx.res().setHeader("Cache-Control", "no-cache");
+            ctx.res().setHeader("Connection", "keep-alive");
+            ctx.res().setHeader("X-Accel-Buffering", "no");
+
+            var writer = ctx.res().getWriter();
+
+            String sourcesJson = MAPPER.writeValueAsString(streamCtx.sources());
+            writer.write("event: sources\ndata: " + sourcesJson + "\n\n");
+            writer.flush();
+
+            StringBuilder fullAnswer = new StringBuilder();
+            CountDownLatch latch = new CountDownLatch(1);
+
+            ragService.streamGenerate(streamCtx.messages(), new StreamingResponseHandler<AiMessage>() {
+                @Override
+                public void onNext(String token) {
+                    fullAnswer.append(token);
+                    try {
+                        writer.write("event: token\ndata: " + MAPPER.writeValueAsString(Map.of("t", token)) + "\n\n");
+                        writer.flush();
+                    } catch (Exception ignored) {}
+                }
+
+                @Override
+                public void onComplete(Response<AiMessage> response) {
+                    try {
+                        Map<String, Object> donePayload = new LinkedHashMap<>();
+                        donePayload.put("answer", fullAnswer.toString());
+                        donePayload.put("sources", streamCtx.sources());
+                        writer.write("event: done\ndata: " + MAPPER.writeValueAsString(donePayload) + "\n\n");
+                        writer.flush();
+                    } catch (Exception ignored) {}
+                    latch.countDown();
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    try {
+                        writer.write("event: error\ndata: " + MAPPER.writeValueAsString(
+                                Map.of("error", error.getMessage() != null ? error.getMessage() : "Unknown error")) + "\n\n");
+                        writer.flush();
+                    } catch (Exception ignored) {}
+                    latch.countDown();
+                }
+            });
+
+            latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
+        });
+
         // --- Admin: Login ---
         app.post("/api/admin/login", ctx -> {
             Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
@@ -408,11 +503,13 @@ public class RagApplication {
             String contentType = (String) body.getOrDefault("contentType", "md");
             String category = (String) body.get("category");
             List<String> tags = body.get("tags") instanceof List ? (List<String>) body.get("tags") : List.of();
+            String summary = (String) body.get("summary");
+            String coverImage = (String) body.get("coverImage");
             if (title == null || title.isBlank()) {
                 ctx.status(400).json(Map.of("error", "title is required"));
                 return;
             }
-            BlogStore.Article article = blogStore.createArticle(title, content != null ? content : "", contentType, category, tags);
+            BlogStore.Article article = blogStore.createArticle(title, content != null ? content : "", contentType, category, tags, summary, coverImage);
             ctx.json(article);
         });
 
@@ -423,11 +520,13 @@ public class RagApplication {
             String content = (String) body.get("content");
             String category = (String) body.get("category");
             List<String> tags = body.get("tags") instanceof List ? (List<String>) body.get("tags") : List.of();
+            String summary = (String) body.get("summary");
+            String coverImage = (String) body.get("coverImage");
             if (title == null || title.isBlank()) {
                 ctx.status(400).json(Map.of("error", "title is required"));
                 return;
             }
-            BlogStore.Article article = blogStore.updateArticle(id, title, content != null ? content : "", category, tags);
+            BlogStore.Article article = blogStore.updateArticle(id, title, content != null ? content : "", category, tags, summary, coverImage);
             ctx.json(article);
         });
 
@@ -438,6 +537,23 @@ public class RagApplication {
 
         app.post("/api/admin/posts/{id}/publish", ctx -> {
             BlogStore.Article article = blogStore.publishArticle(ctx.pathParam("id"));
+            ctx.json(article);
+        });
+
+        app.post("/api/admin/posts/{id}/summarize", ctx -> {
+            String id = ctx.pathParam("id");
+            BlogStore.Article article = blogStore.getById(id);
+            if (article == null) {
+                ctx.status(404).json(Map.of("error", "Article not found"));
+                return;
+            }
+            String text = article.content();
+            if (text.length() > 2000) text = text.substring(0, 2000);
+            String prompt = "请用1-2句话总结以下文章的核心内容，不超过100字，直接输出摘要文本，不要加引号或前缀：\n\n" + text;
+            String generatedSummary = ragService.query(prompt);
+            generatedSummary = generatedSummary.replaceAll("^\"|\"$", "").trim();
+            article = blogStore.updateArticle(id, article.title(), article.content(),
+                    article.category(), article.tags(), generatedSummary, article.coverImage());
             ctx.json(article);
         });
 
@@ -467,6 +583,77 @@ public class RagApplication {
         app.delete("/api/admin/categories/{id}", ctx -> {
             blogStore.deleteCategory(ctx.pathParam("id"));
             ctx.json(Map.of("status", "ok"));
+        });
+
+        // --- Admin: Media ---
+        app.get("/api/admin/media", ctx -> ctx.json(mediaStore.listAll()));
+
+        app.post("/api/admin/media/upload", ctx -> {
+            var uploadedFiles = ctx.uploadedFiles();
+            if (uploadedFiles.isEmpty()) {
+                ctx.status(400).json(Map.of("error", "No file uploaded"));
+                return;
+            }
+            List<Map<String, Object>> uploaded = new ArrayList<>();
+            for (var file : uploadedFiles) {
+                String filename = file.filename();
+                if (filename == null || filename.isBlank()) continue;
+                filename = filename.replaceAll("[\\\\/]", "_");
+                try (var is = file.content()) {
+                    MediaStore.MediaFile mf = mediaStore.upload(filename, file.contentType(), is);
+                    uploaded.add(Map.of(
+                            "id", mf.id(),
+                            "filename", mf.filename(),
+                            "url", mf.url(),
+                            "fileSize", mf.fileSize(),
+                            "mimeType", mf.mimeType()
+                    ));
+                } catch (Exception e) {
+                    uploaded.add(Map.of("error", filename + ": " + e.getMessage()));
+                }
+            }
+            ctx.json(uploaded);
+        });
+
+        app.delete("/api/admin/media/{id}", ctx -> {
+            if (mediaStore.delete(ctx.pathParam("id"))) {
+                ctx.json(Map.of("status", "ok"));
+            } else {
+                ctx.status(404).json(Map.of("error", "Media not found"));
+            }
+        });
+
+        // --- Admin: Document Import (DOCX/PDF → article) ---
+        app.post("/api/admin/import", ctx -> {
+            var uploadedFiles = ctx.uploadedFiles();
+            if (uploadedFiles.isEmpty()) {
+                ctx.status(400).json(Map.of("error", "No file uploaded"));
+                return;
+            }
+            var file = uploadedFiles.get(0);
+            String filename = file.filename();
+            if (filename == null || filename.isBlank()) {
+                ctx.status(400).json(Map.of("error", "Filename is required"));
+                return;
+            }
+
+            Path tmpDir = Files.createTempDirectory("rag-import-");
+            Path tmpFile = tmpDir.resolve(filename.replaceAll("[\\\\/]", "_"));
+            try (var is = file.content()) {
+                Files.copy(is, tmpFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+
+            try {
+                Document doc = AutoDocumentParser.load(tmpFile);
+                String text = doc.text();
+                String title = filename.replaceAll("\\.(docx|pdf|txt|md)$", "").trim();
+
+                BlogStore.Article article = blogStore.createArticle(title, text, "md", null, List.of(), null, null);
+                ctx.json(article);
+            } finally {
+                Files.deleteIfExists(tmpFile);
+                Files.deleteIfExists(tmpDir);
+            }
         });
     }
 

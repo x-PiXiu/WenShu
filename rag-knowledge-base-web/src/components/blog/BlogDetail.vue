@@ -23,6 +23,7 @@
         <MarkdownRenderer :content="article.content" />
       </article>
     </div>
+    <BlogChat v-if="article.slug" :slug="article.slug" />
   </div>
 
   <div class="blog-detail loading-state" v-else>
@@ -33,6 +34,7 @@
 <script setup lang="ts">
 import type { Article } from '../../types/blog'
 import MarkdownRenderer from '../MarkdownRenderer.vue'
+import BlogChat from './BlogChat.vue'
 
 defineProps<{ article: Article | null }>()
 defineEmits<{ (e: 'back'): void }>()
@@ -43,7 +45,7 @@ function formatDate(ts: number): string {
 </script>
 
 <style scoped>
-.blog-detail { flex: 1; overflow-y: auto; background: #FFFFFF; }
+.blog-detail { flex: 1; overflow-y: auto; background: #FFFFFF; position: relative; }
 .detail-container { max-width: 800px; margin: 0 auto; padding: 32px 40px; }
 
 .back-btn {

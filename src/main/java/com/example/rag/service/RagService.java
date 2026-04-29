@@ -19,11 +19,11 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.StreamingResponseHandler;
-import dev.langchain4j.model.output.Response;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 
 import java.nio.file.Path;
@@ -392,6 +392,122 @@ public class RagService {
         AppConfiguration.RagConfig rag = config.getRag();
         this.searcher = new HybridSearcher(store, embeddingModel,
                 rag.vectorTopK, rag.keywordTopK, rag.rrfK, rag.minScore);
+    }
+
+    // ===== Blog Article Indexing =====
+
+    /**
+     * 索引博客文章到向量库
+     */
+    public synchronized void indexBlogArticle(String articleId, String slug, String title, String content, String category) {
+        String source = "blog:" + slug;
+        Metadata meta = new Metadata();
+        meta.add("source", source);
+        meta.add("type", "blog");
+        meta.add("articleId", articleId);
+        meta.add("title", title);
+        meta.add("category", category != null ? category : "");
+
+        TextSegment segment = TextSegment.from(title + "\n\n" + content, meta);
+        Embedding embedding = embeddingModel.embed(segment.text()).content();
+        String id;
+        synchronized (indexLock) {
+            id = store.add(embedding, segment);
+            searcher.indexSegment(id, segment.text(), source);
+            segmentCount++;
+        }
+        System.out.println("[BLOG-INDEX] Indexed article: " + slug + " (segment " + id + ")");
+    }
+
+    /**
+     * 移除博客文章的向量索引
+     */
+    public void removeBlogSegments(String slug) {
+        String source = "blog:" + slug;
+        synchronized (indexLock) {
+            searcher.removeSegmentsBySource(source);
+        }
+        System.out.println("[BLOG-INDEX] Removed segments for: " + slug);
+    }
+
+    /**
+     * 博客专属 RAG 问答（限定 blog: 来源）
+     */
+    public RagAnswer askBlog(String question, List<HistoryEntry> history, String agentPrompt) {
+        List<SearchResult> results = searcher.search(question, "blog:");
+
+        List<Reference> refs = results.stream()
+                .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
+                .toList();
+
+        String systemContent = RagPromptTemplate.buildSystemContext(agentPrompt, refs);
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from(systemContent));
+
+        int start = Math.max(0, history.size() - 10);
+        for (int i = start; i < history.size(); i++) {
+            HistoryEntry entry = history.get(i);
+            if ("user".equals(entry.role())) {
+                messages.add(UserMessage.from(entry.content()));
+            } else if ("assistant".equals(entry.role())) {
+                messages.add(AiMessage.from(entry.content()));
+            }
+        }
+        messages.add(UserMessage.from(question));
+
+        Response<AiMessage> response = chatModel.generate(messages);
+        String answer = response.content().text();
+        if (answer == null) answer = "未能生成回答。";
+
+        List<SourceInfo> sources = new ArrayList<>();
+        for (int i = 0; i < results.size(); i++) {
+            SearchResult r = results.get(i);
+            sources.add(new SourceInfo(i + 1,
+                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
+                    r.source(), r.rrfScore(), r.vectorScore()));
+        }
+
+        return new RagAnswer(answer, sources, refs.stream()
+                .map(r -> r.text().length() > 80 ? r.text().substring(0, 80) + "..." : r.text())
+                .toList());
+    }
+
+    /**
+     * 博客专属流式上下文
+     */
+    public StreamContext prepareBlogStreamContext(String question, List<HistoryEntry> history, String agentPrompt) {
+        List<SearchResult> results = searcher.search(question, "blog:");
+
+        List<Reference> refs = results.stream()
+                .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
+                .toList();
+
+        String systemContent = RagPromptTemplate.buildSystemContext(agentPrompt, refs);
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from(systemContent));
+
+        int start = Math.max(0, history.size() - 10);
+        for (int i = start; i < history.size(); i++) {
+            HistoryEntry entry = history.get(i);
+            if ("user".equals(entry.role())) {
+                messages.add(UserMessage.from(entry.content()));
+            } else if ("assistant".equals(entry.role())) {
+                messages.add(AiMessage.from(entry.content()));
+            }
+        }
+        messages.add(UserMessage.from(question));
+
+        List<SourceInfo> sources = new ArrayList<>();
+        for (int i = 0; i < results.size(); i++) {
+            SearchResult r = results.get(i);
+            sources.add(new SourceInfo(i + 1,
+                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
+                    r.source(), r.rrfScore(), r.vectorScore()));
+        }
+
+        return new StreamContext(messages, sources);
     }
 
     // ===== Stats =====

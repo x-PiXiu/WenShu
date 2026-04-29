@@ -14,18 +14,12 @@
             <button :class="['nav-btn', { active: currentPage === 'blog' || currentPage === 'blog-detail' }]" @click="switchPage('blog')" title="博客">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
             </button>
-            <button :class="['nav-btn', { active: currentPage === 'knowledge' }]" @click="switchPage('knowledge')" title="知识库">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            </button>
             <button :class="['nav-btn', { active: currentPage === 'a2a' }]" @click="switchPage('a2a')" title="A2A 节点">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
             </button>
-            <button :class="['nav-btn', { active: currentPage === 'settings' }]" @click="switchPage('settings')" title="设置">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            </button>
           </nav>
           <div class="sidebar-divider"></div>
-          <button :class="['nav-btn', { active: currentPage.startsWith('admin') }]" @click="isLoggedIn ? (currentPage = 'admin-posts') : (currentPage = 'admin')" title="管理后台">
+          <button :class="['nav-btn', { active: currentPage.startsWith('admin') }]" @click="handleAdminClick" title="管理后台">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           </button>
           <div class="sidebar-status">
@@ -43,7 +37,7 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 新对话
               </button>
-              <span v-if="stats && currentPage !== 'settings'" class="topbar-info">
+              <span v-if="stats && !currentPage.startsWith('admin')" class="topbar-info">
                 {{ stats.llmModel }} &middot; {{ stats.segmentCount }} segments
               </span>
             </div>
@@ -51,7 +45,7 @@
 
           <!-- Content -->
           <div class="content-wrapper">
-            <!-- Chat Page (藏书阁) -->
+            <!-- Chat Page -->
             <template v-if="currentPage === 'chat'">
               <div class="chat-area">
                 <ChatPanel />
@@ -74,23 +68,56 @@
               </div>
             </template>
 
-            <!-- Knowledge Base Page (知识库) -->
-            <template v-if="currentPage === 'knowledge'">
-              <KnowledgeBase />
-            </template>
-
-            <!-- Blog Page (博客) -->
+            <!-- Blog Page -->
             <template v-if="currentPage === 'blog'">
               <BlogList @open-article="openArticle" />
             </template>
 
-            <!-- Blog Detail (文章详情) -->
+            <!-- Blog Detail -->
             <template v-if="currentPage === 'blog-detail'">
               <BlogDetail :article="currentArticle" @back="switchPage('blog')" />
             </template>
 
+            <!-- A2A Page -->
+            <template v-if="currentPage === 'a2a'">
+              <div class="a2a-page">
+                <div class="a2a-container">
+                  <div class="a2a-hero" v-if="agentCard">
+                    <div class="hero-accent"></div>
+                    <div class="hero-body">
+                      <div class="hero-top">
+                        <div class="hero-status"><span class="hero-dot"></span><span>在线</span></div>
+                        <span class="hero-version">v{{ agentCard.version }}</span>
+                      </div>
+                      <h2 class="hero-name">{{ agentCard.name }}</h2>
+                      <p class="hero-desc" v-if="agentCard.description">{{ agentCard.description }}</p>
+                      <div class="hero-endpoint">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        <code>{{ agentCard.url }}</code>
+                      </div>
+                      <div class="hero-tags">
+                        <span v-for="skill in agentCard.skills" :key="skill.id" class="hero-skill">{{ skill.name }}</span>
+                        <template v-if="agentCard.capabilities">
+                          <span :class="['hero-cap', agentCard.capabilities.streaming ? 'on' : 'off']">{{ agentCard.capabilities.streaming ? '流式输出' : '流式输出(关)' }}</span>
+                          <span :class="['hero-cap', agentCard.capabilities.pushNotifications ? 'on' : 'off']">{{ agentCard.capabilities.pushNotifications ? '推送通知' : '推送通知(关)' }}</span>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="a2a-hero a2a-hero-offline" v-else>
+                    <div class="hero-body">
+                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#D4C8BA" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      <h2 class="hero-name" style="color: #B8A898">Agent 暂不可用</h2>
+                    </div>
+                  </div>
+                  <KnowledgeStats :stats="stats" />
+                  <TaskList :tasks="tasks" />
+                </div>
+              </div>
+            </template>
+
             <!-- Admin Login -->
-            <template v-if="currentPage === 'admin'">
+            <template v-if="currentPage === 'admin-login'">
               <div class="admin-login">
                 <div class="login-card">
                   <h2 class="login-title">管理后台</h2>
@@ -103,80 +130,66 @@
               </div>
             </template>
 
-            <!-- Admin: Post List -->
-            <template v-if="currentPage === 'admin-posts'">
-              <div class="admin-page">
-                <div class="admin-topbar">
-                  <button :class="['admin-tab', { active: true }]" @click="currentPage = 'admin-posts'">文章管理</button>
-                  <button class="admin-logout-btn" @click="logout(); currentPage = 'chat'">退出</button>
+            <!-- Admin Panel (tab-based) -->
+            <template v-if="isAdminPage">
+              <div class="admin-panel">
+                <div class="admin-tabs">
+                  <button :class="['admin-tab-btn', { active: adminTab === 'posts' }]" @click="adminTab = 'posts'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    文章管理
+                  </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'knowledge' }]" @click="adminTab = 'knowledge'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+                    知识库
+                  </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'agents' }]" @click="adminTab = 'agents'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    智能体
+                  </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'settings' }]" @click="adminTab = 'settings'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    系统设置
+                  </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'categories' }]" @click="adminTab = 'categories'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                    分类管理
+                  </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'media' }]" @click="adminTab = 'media'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                    媒体库
+                  </button>
+                  <div class="admin-tabs-spacer"></div>
+                  <button class="admin-logout-btn" @click="handleLogout">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    退出
+                  </button>
                 </div>
-                <PostList @create="openEditor()" @edit="(a: Article) => openEditor(a)" />
-              </div>
-            </template>
 
-            <!-- Admin: Post Editor -->
-            <template v-if="currentPage === 'admin-editor'">
-              <PostEditor :edit-article="editingArticle" @back="currentPage = 'admin-posts'" @saved="onArticleSaved" />
-            </template>
-
-            <!-- A2A Page (A2A 节点) -->
-            <template v-if="currentPage === 'a2a'">
-              <div class="a2a-page">
-                <div class="a2a-container">
-
-                  <!-- Hero: Agent Identity -->
-                  <div class="a2a-hero" v-if="agentCard">
-                    <div class="hero-accent"></div>
-                    <div class="hero-body">
-                      <div class="hero-top">
-                        <div class="hero-status">
-                          <span class="hero-dot"></span>
-                          <span>在线</span>
-                        </div>
-                        <span class="hero-version">v{{ agentCard.version }}</span>
-                      </div>
-                      <h2 class="hero-name">{{ agentCard.name }}</h2>
-                      <p class="hero-desc" v-if="agentCard.description">{{ agentCard.description }}</p>
-                      <div class="hero-endpoint">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                        <code>{{ agentCard.url }}</code>
-                      </div>
-                      <div class="hero-tags">
-                        <span v-for="skill in agentCard.skills" :key="skill.id" class="hero-skill">
-                          {{ skill.name }}
-                        </span>
-                        <template v-if="agentCard.capabilities">
-                          <span :class="['hero-cap', agentCard.capabilities.streaming ? 'on' : 'off']">
-                            {{ agentCard.capabilities.streaming ? '流式输出' : '流式输出(关)' }}
-                          </span>
-                          <span :class="['hero-cap', agentCard.capabilities.pushNotifications ? 'on' : 'off']">
-                            {{ agentCard.capabilities.pushNotifications ? '推送通知' : '推送通知(关)' }}
-                          </span>
-                        </template>
-                      </div>
+                <div class="admin-content">
+                  <template v-if="adminTab === 'posts' && currentPage === 'admin'">
+                    <PostList @create="openEditor()" @edit="(a: Article) => openEditor(a)" />
+                  </template>
+                  <template v-if="adminTab === 'posts' && currentPage === 'admin-editor'">
+                    <PostEditor :edit-article="editingArticle" @back="currentPage = 'admin'" @saved="onArticleSaved" />
+                  </template>
+                  <template v-if="adminTab === 'knowledge'">
+                    <KnowledgeBase />
+                  </template>
+                  <template v-if="adminTab === 'agents'">
+                    <AgentManager />
+                  </template>
+                  <template v-if="adminTab === 'settings'">
+                    <div class="settings-scroll-inner">
+                      <SettingsPage />
                     </div>
-                  </div>
-                  <div class="a2a-hero a2a-hero-offline" v-else>
-                    <div class="hero-body">
-                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#D4C8BA" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                      <h2 class="hero-name" style="color: #B8A898">Agent 暂不可用</h2>
-                    </div>
-                  </div>
-
-                  <!-- Knowledge Stats -->
-                  <KnowledgeStats :stats="stats" />
-
-                  <!-- Task List -->
-                  <TaskList :tasks="tasks" />
-
+                  </template>
+                  <template v-if="adminTab === 'categories'">
+                    <CategoryManager />
+                  </template>
+                  <template v-if="adminTab === 'media'">
+                    <MediaManager />
+                  </template>
                 </div>
-              </div>
-            </template>
-
-            <!-- Settings -->
-            <template v-if="currentPage === 'settings'">
-              <div class="settings-scroll-wrapper">
-                <SettingsPage />
               </div>
             </template>
           </div>
@@ -195,12 +208,15 @@ import SettingsPage from './components/SettingsPage.vue'
 import KnowledgeBase from './components/KnowledgeBase.vue'
 import KnowledgeStats from './components/KnowledgeStats.vue'
 import AgentCard from './components/AgentCard.vue'
+import AgentManager from './components/AgentManager.vue'
 import TaskList from './components/TaskList.vue'
 import ConversationList from './components/ConversationList.vue'
 import BlogList from './components/blog/BlogList.vue'
 import BlogDetail from './components/blog/BlogDetail.vue'
 import PostEditor from './components/admin/PostEditor.vue'
 import PostList from './components/admin/PostList.vue'
+import CategoryManager from './components/admin/CategoryManager.vue'
+import MediaManager from './components/admin/MediaManager.vue'
 import { useA2aClient } from './composables/useA2aClient'
 import { useSettings } from './composables/useSettings'
 import { useChat } from './composables/useChat'
@@ -225,6 +241,7 @@ const warmTheme: GlobalThemeOverrides = {
 }
 
 const currentPage = ref('chat')
+const adminTab = ref('posts')
 const sidePanelCollapsed = ref(false)
 const healthStatus = ref('')
 
@@ -236,24 +253,32 @@ const { getPost } = useBlog()
 const { isLoggedIn, login, logout } = useAdmin()
 const stats = ref<Stats | null>(null)
 
-// Blog state
-const currentArticleSlug = ref<string | null>(null)
 const currentArticle = ref<Article | null>(null)
 const editingArticle = ref<Article | null>(null)
 const adminPassword = ref('')
 const adminLoginError = ref(false)
 
+const isAdminPage = computed(() => ['admin', 'admin-editor', 'admin-posts'].includes(currentPage.value))
+
 const pageTitle = computed(() => {
+  if (currentPage.value === 'admin-editor' && adminTab.value === 'posts') return editingArticle.value ? '编辑文章' : '新建文章'
   switch (currentPage.value) {
     case 'chat': return '文枢 · 藏书阁'
     case 'blog': return '文枢 · 博客'
     case 'blog-detail': return currentArticle.value?.title || '文枢 · 博客'
-    case 'knowledge': return '文枢 · 知识库'
     case 'a2a': return '文枢 · A2A 节点'
-    case 'settings': return '文枢 · 设置'
-    case 'admin': return '文枢 · 管理后台'
-    case 'admin-editor': return editingArticle.value ? '编辑文章' : '新建文章'
-    case 'admin-posts': return '文章管理'
+    case 'admin':
+    case 'admin-posts':
+      switch (adminTab.value) {
+        case 'posts': return '文章管理'
+        case 'knowledge': return '知识库管理'
+        case 'agents': return '智能体管理'
+        case 'settings': return '系统设置'
+        case 'categories': return '分类管理'
+        case 'media': return '媒体库'
+        default: return '管理后台'
+      }
+    case 'admin-login': return '管理后台'
     default: return ''
   }
 })
@@ -264,15 +289,22 @@ function switchPage(page: string) {
     fetchTasks()
   } else if (page === 'blog') {
     currentPage.value = 'blog'
-    currentArticleSlug.value = null
     currentArticle.value = null
   } else {
     currentPage.value = page
   }
 }
 
+function handleAdminClick() {
+  if (isLoggedIn.value) {
+    currentPage.value = 'admin'
+    adminTab.value = 'posts'
+  } else {
+    currentPage.value = 'admin-login'
+  }
+}
+
 async function openArticle(slug: string) {
-  currentArticleSlug.value = slug
   currentArticle.value = await getPost(slug)
   currentPage.value = 'blog-detail'
 }
@@ -282,20 +314,28 @@ async function handleAdminLogin() {
   const ok = await login(adminPassword.value)
   if (ok) {
     adminPassword.value = ''
-    currentPage.value = 'admin-posts'
+    currentPage.value = 'admin'
+    adminTab.value = 'posts'
   } else {
     adminLoginError.value = true
   }
 }
 
+function handleLogout() {
+  logout()
+  currentPage.value = 'chat'
+}
+
 function openEditor(article?: Article) {
   editingArticle.value = article || null
   currentPage.value = 'admin-editor'
+  adminTab.value = 'posts'
 }
 
 function onArticleSaved(article: Article) {
   editingArticle.value = article
-  currentPage.value = 'admin-posts'
+  currentPage.value = 'admin'
+  adminTab.value = 'posts'
 }
 
 async function checkHealth() {
@@ -403,7 +443,6 @@ body {
 /* Content */
 .content-wrapper { flex: 1; display: flex; overflow: hidden; min-height: 0; }
 .chat-area { flex: 1; overflow: hidden; }
-.settings-scroll-wrapper { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; }
 .a2a-page { flex: 1; overflow-y: auto; overflow-x: hidden; background: #F8F5EF; }
 .a2a-container { max-width: 860px; margin: 0 auto; padding: 24px 32px; }
 
@@ -415,67 +454,23 @@ body {
   overflow: hidden;
   margin-bottom: 20px;
 }
-.hero-accent {
-  height: 4px;
-  background: linear-gradient(90deg, #E8913A, #D4644A, #E8913A);
-}
+.hero-accent { height: 4px; background: linear-gradient(90deg, #E8913A, #D4644A, #E8913A); }
 .hero-body { padding: 24px 28px; }
-.hero-top {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 10px;
-}
-.hero-status {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 500; color: #4CAF50;
-}
-.hero-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: #4CAF50;
-  box-shadow: 0 0 6px rgba(76,175,80,0.4);
-}
-.hero-version {
-  font-size: 12px; color: #B8A898;
-  background: #F5F0EB; padding: 2px 10px; border-radius: 10px;
-  font-family: 'Cascadia Code', 'Fira Code', monospace;
-}
-.hero-name {
-  font-size: 22px; font-weight: 700; color: #3D3028;
-  margin: 0 0 8px;
-}
-.hero-desc {
-  font-size: 14px; color: #6B5E52; line-height: 1.6;
-  margin: 0 0 16px;
-}
-.hero-endpoint {
-  display: flex; align-items: center; gap: 8px;
-  background: #FAF7F2; border: 1px solid #E8DDD0;
-  border-radius: 8px; padding: 8px 12px;
-  margin-bottom: 16px;
-}
+.hero-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.hero-status { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: #4CAF50; }
+.hero-dot { width: 8px; height: 8px; border-radius: 50%; background: #4CAF50; box-shadow: 0 0 6px rgba(76,175,80,0.4); }
+.hero-version { font-size: 12px; color: #B8A898; background: #F5F0EB; padding: 2px 10px; border-radius: 10px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.hero-name { font-size: 22px; font-weight: 700; color: #3D3028; margin: 0 0 8px; }
+.hero-desc { font-size: 14px; color: #6B5E52; line-height: 1.6; margin: 0 0 16px; }
+.hero-endpoint { display: flex; align-items: center; gap: 8px; background: #FAF7F2; border: 1px solid #E8DDD0; border-radius: 8px; padding: 8px 12px; margin-bottom: 16px; }
 .hero-endpoint svg { color: #B8A898; flex-shrink: 0; }
-.hero-endpoint code {
-  font-family: 'Cascadia Code', 'Fira Code', monospace;
-  font-size: 12px; color: #6B5E52;
-}
+.hero-endpoint code { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; color: #6B5E52; }
 .hero-tags { display: flex; flex-wrap: wrap; gap: 8px; }
-.hero-skill {
-  display: inline-flex; align-items: center;
-  padding: 4px 14px; border-radius: 14px;
-  font-size: 12px; font-weight: 500;
-  background: linear-gradient(135deg, #FEF3E8, #FFF5ED);
-  color: #D97B2B; border: 1px solid #F5DFC8;
-}
-.hero-cap {
-  display: inline-flex; align-items: center;
-  padding: 4px 14px; border-radius: 14px;
-  font-size: 12px; font-weight: 500;
-}
+.hero-skill { display: inline-flex; align-items: center; padding: 4px 14px; border-radius: 14px; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #FEF3E8, #FFF5ED); color: #D97B2B; border: 1px solid #F5DFC8; }
+.hero-cap { display: inline-flex; align-items: center; padding: 4px 14px; border-radius: 14px; font-size: 12px; font-weight: 500; }
 .hero-cap.on { background: #E8F5E9; color: #4CAF50; border: 1px solid #C8E6C9; }
 .hero-cap.off { background: #F5F0EB; color: #B8A898; border: 1px solid #E8DDD0; }
-.a2a-hero-offline .hero-body {
-  display: flex; flex-direction: column; align-items: center;
-  gap: 12px; padding: 40px 28px;
-}
+.a2a-hero-offline .hero-body { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 28px; }
 
 /* Side Panel */
 .side-panel {
@@ -500,45 +495,41 @@ body {
 .sidebar-divider { width: 28px; height: 1px; background: #5A4E44; margin: 8px 0; }
 
 /* Admin Login */
-.admin-login {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  background: #F8F5EF;
-}
-.login-card {
-  background: #FFFFFF; border: 1px solid #E8DDD0; border-radius: 16px;
-  padding: 40px; width: 360px; text-align: center;
-}
+.admin-login { flex: 1; display: flex; align-items: center; justify-content: center; background: #F8F5EF; }
+.login-card { background: #FFFFFF; border: 1px solid #E8DDD0; border-radius: 16px; padding: 40px; width: 360px; text-align: center; }
 .login-title { font-size: 20px; font-weight: 600; color: #3D3028; margin: 0 0 8px; }
 .login-desc { font-size: 14px; color: #8B7E74; margin: 0 0 24px; }
-.login-input {
-  width: 100%; padding: 10px 16px; border: 1px solid #E8DDD0; border-radius: 10px;
-  font-size: 14px; color: #3D3028; outline: none; margin-bottom: 8px;
-  box-sizing: border-box;
-}
+.login-input { width: 100%; padding: 10px 16px; border: 1px solid #E8DDD0; border-radius: 10px; font-size: 14px; color: #3D3028; outline: none; margin-bottom: 8px; box-sizing: border-box; }
 .login-input:focus { border-color: #D97B2B; }
 .login-error { font-size: 13px; color: #E85D5D; margin: 0 0 12px; }
-.login-btn {
-  width: 100%; padding: 10px; border: none; border-radius: 10px;
-  background: #D97B2B; color: #FFFFFF; font-size: 14px; font-weight: 500;
-  cursor: pointer; transition: background 0.2s;
-}
+.login-btn { width: 100%; padding: 10px; border: none; border-radius: 10px; background: #D97B2B; color: #FFFFFF; font-size: 14px; font-weight: 500; cursor: pointer; transition: background 0.2s; }
 .login-btn:hover { background: #C06A1E; }
 
-/* Admin Page */
-.admin-page { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.admin-topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 0 24px; border-bottom: 1px solid #E8DDD0; background: #FFFFFF; height: 48px;
-  flex-shrink: 0;
+/* Admin Panel */
+.admin-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.admin-tabs {
+  display: flex; align-items: center;
+  padding: 0 20px; border-bottom: 1px solid #E8DDD0;
+  background: #FFFFFF; height: 46px; flex-shrink: 0;
+  gap: 2px;
 }
-.admin-tab {
-  border: none; background: none; color: #D97B2B; font-size: 14px;
-  font-weight: 500; cursor: pointer; padding: 12px 0;
-  border-bottom: 2px solid #D97B2B;
+.admin-tab-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; background: none; color: #8B7E74;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  padding: 12px 14px; border-bottom: 2px solid transparent;
+  transition: all 0.2s; white-space: nowrap;
 }
+.admin-tab-btn:hover { color: #D97B2B; }
+.admin-tab-btn.active { color: #D97B2B; border-bottom-color: #D97B2B; }
+.admin-tabs-spacer { flex: 1; }
 .admin-logout-btn {
+  display: inline-flex; align-items: center; gap: 5px;
   border: 1px solid #E8DDD0; border-radius: 6px; background: #FFFFFF;
-  color: #8B7E74; font-size: 12px; padding: 4px 12px; cursor: pointer;
+  color: #8B7E74; font-size: 12px; padding: 4px 10px; cursor: pointer;
+  transition: all 0.2s;
 }
 .admin-logout-btn:hover { border-color: #E85D5D; color: #E85D5D; }
+.admin-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.settings-scroll-inner { flex: 1; overflow-y: auto; overflow-x: hidden; }
 </style>

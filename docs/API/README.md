@@ -36,6 +36,32 @@
   - [6.1 获取 Agent 卡片](#61-获取-agent-卡片)
   - [6.2 JSON-RPC 调用](#62-json-rpc-调用)
   - [6.3 获取任务历史](#63-获取任务历史)
+- [7. 博客公开接口](#7-博客公开接口)
+  - [7.1 获取文章列表](#71-获取文章列表)
+  - [7.2 获取文章详情](#72-获取文章详情)
+  - [7.3 获取分类列表](#73-获取分类列表)
+  - [7.4 获取标签列表](#74-获取标签列表)
+  - [7.5 搜索文章](#75-搜索文章)
+  - [7.6 博客统计](#76-博客统计)
+  - [7.7 博客问答](#77-博客问答)
+  - [7.8 博客流式问答 (SSE)](#78-博客流式问答-sse)
+- [8. 管理员接口](#8-管理员接口)
+  - [8.1 管理员登录](#81-管理员登录)
+  - [8.2 获取全部文章](#82-获取全部文章)
+  - [8.3 创建文章](#83-创建文章)
+  - [8.4 更新文章](#84-更新文章)
+  - [8.5 删除文章](#85-删除文章)
+  - [8.6 发布文章](#86-发布文章)
+  - [8.7 取消发布文章](#87-取消发布文章)
+  - [8.8 AI 生成摘要](#88-ai-生成摘要)
+  - [8.9 文档导入](#89-文档导入)
+  - [8.10 创建分类](#810-创建分类)
+  - [8.11 更新分类](#811-更新分类)
+  - [8.12 删除分类](#812-删除分类)
+- [9. 媒体管理](#9-媒体管理)
+  - [9.1 获取媒体列表](#91-获取媒体列表)
+  - [9.2 上传媒体文件](#92-上传媒体文件)
+  - [9.3 删除媒体文件](#93-删除媒体文件)
 - [附录：数据模型](#附录数据模型)
 
 ---
@@ -1340,6 +1366,599 @@ GET /a2a/v1/tasks
 
 ---
 
+## 7. 博客公开接口
+
+博客公开接口无需鉴权，用于前端博客浏览和文章问答。
+
+### 7.1 获取文章列表
+
+返回已发布文章的分页列表，支持按分类和标签筛选。
+
+```
+GET /api/blog/posts
+```
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `page` | int | 否 | 页码，默认 1 |
+| `size` | int | 否 | 每页条数，默认取配置中 `blog.postsPerPage` |
+| `category` | string | 否 | 按分类名称筛选 |
+| `tag` | string | 否 | 按标签名称筛选 |
+
+**响应示例**
+
+```json
+{
+  "items": [
+    {
+      "id": "post-a1b2c3d4",
+      "title": "LangChain4j 入门指南",
+      "slug": "langchain4j-guide-1234",
+      "summary": "本文介绍 LangChain4j 的核心概念...",
+      "content": "# LangChain4j 入门指南\n\n...",
+      "contentType": "md",
+      "category": "Java",
+      "tags": ["LangChain4j", "AI", "Java"],
+      "coverImage": "/uploads/media-abc.png",
+      "status": "published",
+      "isTop": false,
+      "viewCount": 42,
+      "wordCount": 3200,
+      "publishedAt": 1713619200000,
+      "createdAt": 1713619000000,
+      "updatedAt": 1713619200000
+    }
+  ],
+  "total": 15,
+  "page": 1,
+  "size": 10
+}
+```
+
+> 列表接口返回的 `content` 为完整内容。前端可按需截取摘要展示。
+
+---
+
+### 7.2 获取文章详情
+
+根据 slug 获取已发布文章的完整内容，同时自动递增阅读量。
+
+```
+GET /api/blog/posts/{slug}
+```
+
+**路径参数**
+
+| 参数 | 说明 |
+|------|------|
+| `slug` | 文章的 URL 友好标识 |
+
+**响应示例**
+
+与 7.1 中单篇文章格式相同。
+
+**错误响应**
+
+```json
+{ "error": "Article not found" }
+```
+> HTTP 404
+
+---
+
+### 7.3 获取分类列表
+
+```
+GET /api/blog/categories
+```
+
+**响应示例**
+
+```json
+[
+  {
+    "id": "cat-abc12345",
+    "name": "Java",
+    "slug": "java",
+    "description": "Java 编程相关文章",
+    "sortOrder": 0,
+    "createdAt": 1713619200000,
+    "updatedAt": 1713619200000
+  }
+]
+```
+
+---
+
+### 7.4 获取标签列表
+
+返回所有已发布文章中出现过的标签。
+
+```
+GET /api/blog/tags
+```
+
+**响应示例**
+
+```json
+["LangChain4j", "AI", "Java", "RAG", "向量数据库"]
+```
+
+---
+
+### 7.5 搜索文章
+
+按关键词搜索已发布文章（标题、内容、标签模糊匹配）。
+
+```
+GET /api/blog/search?q=keyword
+```
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `q` | string | 是 | 搜索关键词 |
+
+**响应示例**
+
+返回最多 20 条匹配文章（格式同 7.1 中的 items）：
+
+```json
+[
+  { "id": "post-...", "title": "...", ... }
+]
+```
+
+---
+
+### 7.6 博客统计
+
+```
+GET /api/blog/stats
+```
+
+**响应示例**
+
+```json
+{
+  "totalArticles": 15,
+  "totalCategories": 5,
+  "totalTags": 12,
+  "blogTitle": "文枢博客",
+  "blogDescription": "基于 RAG 的智能博客"
+}
+```
+
+---
+
+### 7.7 博客问答
+
+基于博客文章内容的 RAG 问答（限定 `blog:` 来源范围）。
+
+```
+POST /api/blog/chat
+```
+
+**请求参数**
+
+```json
+{
+  "question": "LangChain4j 支持哪些模型？"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `question` | string | 是 | 用户问题 |
+
+**响应示例**
+
+```json
+{
+  "answer": "LangChain4j 支持多种模型提供商...",
+  "sources": [
+    {
+      "index": 1,
+      "text": "LangChain4j 支持的模型包括...",
+      "source": "blog:langchain4j-guide-1234",
+      "rrfScore": 0.0323,
+      "vectorScore": 0.8712
+    }
+  ]
+}
+```
+
+---
+
+### 7.8 博客流式问答 (SSE)
+
+与 7.7 相同的问答功能，但通过 SSE 逐 Token 流式返回。
+
+```
+POST /api/blog/chat/stream
+```
+
+**请求参数**
+
+与 7.7 相同。
+
+**响应格式**
+
+`Content-Type: text/event-stream; charset=UTF-8`
+
+事件格式与 [1.2 流式问答](#12-流式问答-sse) 相同，包含 `sources` → `token`(多次) → `done` 事件。
+
+> 注意：博客流式问答不包含 `meta` 事件（无 conversationId）。
+
+---
+
+## 8. 管理员接口
+
+所有 `/api/admin/*` 接口（除登录外）需要在请求头中携带 `X-Admin-Token` 进行鉴权。
+
+### 8.1 管理员登录
+
+```
+POST /api/admin/login
+```
+
+**请求参数**
+
+```json
+{
+  "password": "your-admin-password"
+}
+```
+
+**响应示例**
+
+```json
+{
+  "token": "generated-token-string",
+  "status": "ok"
+}
+```
+
+> 后续所有管理接口请求需携带 `X-Admin-Token: generated-token-string` 头。
+
+**错误响应**
+
+```json
+{ "error": "Invalid password" }
+```
+> HTTP 401
+
+---
+
+### 8.2 获取全部文章
+
+返回所有文章（含草稿），按更新时间降序。
+
+```
+GET /api/admin/posts?page=1&size=20
+```
+
+**查询参数**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `page` | int | 否 | 页码，默认 1 |
+| `size` | int | 否 | 每页条数，默认 20 |
+
+**响应格式**
+
+与 [7.1 获取文章列表](#71-获取文章列表) 相同的 `PageResult<Article>` 格式，但包含所有状态的文章。
+
+---
+
+### 8.3 创建文章
+
+```
+POST /api/admin/posts
+```
+
+**请求参数**
+
+```json
+{
+  "title": "文章标题",
+  "content": "# Markdown 正文\n\n...",
+  "contentType": "md",
+  "category": "Java",
+  "tags": ["AI", "RAG"],
+  "summary": "文章摘要",
+  "coverImage": "/uploads/media-abc.png"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `title` | string | 是 | 文章标题 |
+| `content` | string | 否 | Markdown 正文（默认空） |
+| `contentType` | string | 否 | 内容格式，默认 `md` |
+| `category` | string | 否 | 分类名称 |
+| `tags` | string[] | 否 | 标签列表 |
+| `summary` | string | 否 | 文章摘要 |
+| `coverImage` | string | 否 | 封面图 URL |
+
+**响应示例**
+
+返回创建的文章对象（状态为 `draft`）。
+
+---
+
+### 8.4 更新文章
+
+```
+PUT /api/admin/posts/{id}
+```
+
+**路径参数**
+
+| 参数 | 说明 |
+|------|------|
+| `id` | 文章 ID |
+
+**请求参数**
+
+与 8.3 相同（不含 `contentType`）。更新后如果文章已发布，向量索引会自动重建。
+
+**响应示例**
+
+返回更新后的文章对象。
+
+---
+
+### 8.5 删除文章
+
+```
+DELETE /api/admin/posts/{id}
+```
+
+如果文章已发布，同时移除向量索引。
+
+**响应示例**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+### 8.6 发布文章
+
+将草稿文章发布，同时自动向量化索引到知识库。
+
+```
+POST /api/admin/posts/{id}/publish
+```
+
+**响应示例**
+
+返回更新后的文章对象（状态为 `published`）。
+
+---
+
+### 8.7 取消发布文章
+
+将已发布文章回退为草稿，同时移除向量索引。
+
+```
+POST /api/admin/posts/{id}/unpublish
+```
+
+**响应示例**
+
+返回更新后的文章对象（状态为 `draft`）。
+
+---
+
+### 8.8 AI 生成摘要
+
+调用 LLM 为指定文章自动生成摘要并更新到数据库。
+
+```
+POST /api/admin/posts/{id}/summarize
+```
+
+**说明**
+
+- 取文章内容的前 2000 字符作为输入
+- 使用当前配置的 LLM 生成 1-2 句摘要（不超过 100 字）
+- 生成后自动更新文章的 `summary` 字段
+
+**响应示例**
+
+返回更新后的文章对象（含新的 `summary`）。
+
+---
+
+### 8.9 文档导入
+
+将 DOCX/PDF 文件导入为博客文章。使用 `AutoDocumentParser` 解析文件内容后创建文章。
+
+```
+POST /api/admin/import
+Content-Type: multipart/form-data
+```
+
+**请求参数**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `file` | File | 是 | 上传的文件（支持 .docx、.pdf） |
+
+**cURL 示例**
+
+```bash
+curl -X POST http://localhost:8080/api/admin/import \
+  -H "X-Admin-Token: your-token" \
+  -F "file=@/path/to/document.docx"
+```
+
+**响应示例**
+
+返回创建的文章对象（状态为 `draft`，标题为文件名去扩展名）。
+
+---
+
+### 8.10 创建分类
+
+```
+POST /api/admin/categories
+```
+
+**请求参数**
+
+```json
+{
+  "name": "Java",
+  "slug": "java",
+  "description": "Java 编程相关文章"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | 是 | 分类名称，不能为空 |
+| `slug` | string | 是 | URL 标识，不能为空 |
+| `description` | string | 否 | 分类描述 |
+
+**响应示例**
+
+返回创建的分类对象。
+
+---
+
+### 8.11 更新分类
+
+```
+PUT /api/admin/categories/{id}
+```
+
+**请求参数**
+
+与 8.10 相同。
+
+**响应示例**
+
+返回更新后的分类对象。
+
+---
+
+### 8.12 删除分类
+
+```
+DELETE /api/admin/categories/{id}
+```
+
+**响应示例**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+## 9. 媒体管理
+
+媒体管理接口需要管理员鉴权。上传的文件存储在 `uploads/` 目录，通过 `/uploads/{filename}` 访问。
+
+### 9.1 获取媒体列表
+
+```
+GET /api/admin/media
+```
+
+**响应示例**
+
+```json
+[
+  {
+    "id": "media-abc12345",
+    "filename": "screenshot.png",
+    "storedName": "media-abc12345.png",
+    "url": "/uploads/media-abc12345.png",
+    "fileSize": 102400,
+    "mimeType": "image/png",
+    "createdAt": 1713619200000
+  }
+]
+```
+
+---
+
+### 9.2 上传媒体文件
+
+```
+POST /api/admin/media/upload
+Content-Type: multipart/form-data
+```
+
+**请求参数**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `files` | File(s) | 是 | 上传的文件（支持多文件） |
+
+**cURL 示例**
+
+```bash
+curl -X POST http://localhost:8080/api/admin/media/upload \
+  -H "X-Admin-Token: your-token" \
+  -F "files=@/path/to/image.png" \
+  -F "files=@/path/to/doc.pdf"
+```
+
+**响应示例**
+
+```json
+[
+  {
+    "id": "media-abc12345",
+    "filename": "image.png",
+    "url": "/uploads/media-abc12345.png",
+    "fileSize": 102400,
+    "mimeType": "image/png"
+  },
+  {
+    "id": "media-def67890",
+    "filename": "doc.pdf",
+    "url": "/uploads/media-def67890.pdf",
+    "fileSize": 256000,
+    "mimeType": "application/pdf"
+  }
+]
+```
+
+---
+
+### 9.3 删除媒体文件
+
+删除媒体记录及对应的磁盘文件。
+
+```
+DELETE /api/admin/media/{id}
+```
+
+**响应示例**
+
+```json
+{ "status": "ok" }
+```
+
+**错误响应**
+
+```json
+{ "error": "Media not found" }
+```
+> HTTP 404
+
+---
+
 ## 附录：数据模型
 
 ### Conversation（对话）
@@ -1406,5 +2025,67 @@ GET /a2a/v1/tasks
   "createdAt": long      // 创建时间戳
   "question":  string?   // 原始问题
   "sources":   SourceInfo[]?  // 检索来源
+}
+```
+
+### Article（文章）
+
+```
+{
+  "id":           string    // 文章 ID，格式 "post-{uuid}"
+  "title":        string    // 标题
+  "slug":         string    // URL 友好标识
+  "summary":      string?   // 摘要
+  "content":      string    // Markdown 正文
+  "contentType":  string    // 内容格式：md
+  "category":     string?   // 分类名称
+  "tags":         string[]  // 标签列表
+  "coverImage":   string?   // 封面图 URL
+  "status":       string    // 状态：draft | published | archived
+  "isTop":        boolean   // 是否置顶
+  "viewCount":    int       // 阅读量
+  "wordCount":    int       // 字数
+  "publishedAt":  long?     // 发布时间戳（未发布为 null）
+  "createdAt":    long      // 创建时间戳
+  "updatedAt":    long      // 更新时间戳
+}
+```
+
+### PageResult（分页结果）
+
+```
+{
+  "items":  T[]     // 数据列表
+  "total":  int     // 总记录数
+  "page":   int     // 当前页码
+  "size":   int     // 每页条数
+}
+```
+
+### Category（分类）
+
+```
+{
+  "id":          string   // 分类 ID，格式 "cat-{uuid}"
+  "name":        string   // 分类名称
+  "slug":        string   // URL 标识
+  "description": string   // 分类描述
+  "sortOrder":   int      // 排序权重
+  "createdAt":   long     // 创建时间戳
+  "updatedAt":   long     // 更新时间戳
+}
+```
+
+### MediaFile（媒体文件）
+
+```
+{
+  "id":         string   // 媒体 ID，格式 "media-{uuid}"
+  "filename":   string   // 原始文件名
+  "storedName": string   // 存储文件名（含扩展名）
+  "url":        string   // 访问 URL，格式 "/uploads/{storedName}"
+  "fileSize":   long     // 文件大小（字节）
+  "mimeType":   string   // MIME 类型
+  "createdAt":  long     // 创建时间戳
 }
 ```
