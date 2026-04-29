@@ -22,7 +22,7 @@
 
 | 层级 | 技术 | 说明 |
 |------|------|------|
-| 后端框架 | Java 17 + Javalin | 轻量级 HTTP 服务，端口 8080 |
+| 后端框架 | Java 17 + Javalin | 轻量级 HTTP 服务，端口 8081 |
 | AI 框架 | LangChain4j 0.36.2 | LLM 调用、文档解析、向量存储 |
 | 向量数据库 | InMemory / Chroma / Milvus | 可通过配置切换 |
 | 数据持久化 | SQLite | 对话历史、智能体数据 |
@@ -49,7 +49,7 @@
 └─────────────────────────┬───────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────┐
-│                  后端 (Javalin :8080)                     │
+│                  后端 (Javalin :8081)                     │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │                    API Routes                       │  │
 │  │  /api/chat  /api/documents  /api/agents  /a2a/v1   │  │
@@ -215,8 +215,8 @@ java -jar target/rag-knowledge-base-1.0-SNAPSHOT.jar
 [INIT] Knowledge base indexed: X docs, Y segments
 ========================================
   文枢 · 藏书阁  WenShu v1.0.0
-  http://localhost:8080
-  A2A endpoint: http://localhost:8080/a2a/v1
+  http://localhost:8081
+  A2A endpoint: http://localhost:8081/a2a/v1
 ========================================
 ```
 
@@ -253,7 +253,7 @@ npm install
 npm run dev
 ```
 
-前端开发服务器启动在 `http://localhost:5173`，已配置 Vite 代理将 `/api` 和 `/a2a` 请求转发到后端 `http://localhost:8080`。
+前端开发服务器启动在 `http://localhost:5173`，已配置 Vite 代理将 `/api` 和 `/a2a` 请求转发到后端 `http://localhost:8081`。
 
 > **注意**：开发模式下需要同时运行后端服务。
 
@@ -285,14 +285,14 @@ server {
 
     # API 反向代理到后端
     location /api/ {
-        proxy_pass http://localhost:8080;
+        proxy_pass http://localhost:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     # A2A 协议反向代理
     location /a2a/ {
-        proxy_pass http://localhost:8080;
+        proxy_pass http://localhost:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -449,7 +449,7 @@ WenShu/
 
 ### Q: 前端无法连接后端
 
-确保后端已启动在 `8080` 端口。开发模式下 Vite 代理会自动转发请求，生产环境需配置 Nginx 反向代理。
+确保后端已启动在 `8081` 端口。开发模式下 Vite 代理会自动转发请求，生产环境需配置 Nginx 反向代理。
 
 ### Q: 如何更换 LLM 模型
 

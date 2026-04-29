@@ -18,12 +18,18 @@ public class AppConfiguration {
     private static final String CONFIG_FILE = "config.json";
     private static final ObjectMapper MAPPER = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
+    private ServerConfig server;
     private LlmConfig llm;
     private EmbeddingConfig embedding;
     private VectorStoreConfig vectorStore;
     private RagConfig rag;
     private A2AConfig a2a;
+    private BlogConfig blog;
     private List<DocumentTypeConfig> documentTypes;
+
+    public static class ServerConfig {
+        public int port = 8081;
+    }
 
     public static class LlmConfig {
         public String provider = "ollama";
@@ -68,6 +74,15 @@ public class AppConfiguration {
         public String agentDescription = "基于 RAG 的智能知识库问答 Agent，支持混合检索（向量+关键词）、动态 LLM/Embedding 切换、多种向量存储后端，兼容 A2A 协议实现跨 Agent 协作";
     }
 
+    public static class BlogConfig {
+        public String title = "文枢博客";
+        public String description = "基于 RAG 的智能博客";
+        public int postsPerPage = 10;
+        public String adminPassword = "admin123";
+        public boolean allowComments = false;
+        public boolean autoSummary = true;
+    }
+
     public static class DocumentTypeConfig {
         public String name;
         public String label;
@@ -108,27 +123,34 @@ public class AppConfiguration {
 
     public static AppConfiguration createDefault() {
         AppConfiguration config = new AppConfiguration();
+        config.server = new ServerConfig();
         config.llm = new LlmConfig();
         config.embedding = new EmbeddingConfig();
         config.vectorStore = new VectorStoreConfig();
         config.rag = new RagConfig();
         config.a2a = new A2AConfig();
+        config.blog = new BlogConfig();
         config.documentTypes = createDefaultDocumentTypes();
         return config;
     }
 
+
+    public ServerConfig getServer() { return server != null ? server : new ServerConfig(); }
+    public void setServer(ServerConfig server) { this.server = server; }
 
 public LlmConfig getLlm() { return llm; }
     public EmbeddingConfig getEmbedding() { return embedding; }
     public VectorStoreConfig getVectorStore() { return vectorStore; }
     public RagConfig getRag() { return rag; }
     public A2AConfig getA2a() { return a2a; }
+    public BlogConfig getBlog() { return blog != null ? blog : new BlogConfig(); }
 
     public void setLlm(LlmConfig llm) { this.llm = llm; }
     public void setEmbedding(EmbeddingConfig embedding) { this.embedding = embedding; }
     public void setVectorStore(VectorStoreConfig vectorStore) { this.vectorStore = vectorStore; }
     public void setRag(RagConfig rag) { this.rag = rag; }
     public void setA2a(A2AConfig a2a) { this.a2a = a2a; }
+    public void setBlog(BlogConfig blog) { this.blog = blog; }
 
     public List<DocumentTypeConfig> getDocumentTypes() {
         return documentTypes != null ? documentTypes : createDefaultDocumentTypes();

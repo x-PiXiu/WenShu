@@ -3,6 +3,8 @@ package com.example.rag;
 import com.example.rag.a2a.AgentCard;
 import com.example.rag.a2a.Task;
 import com.example.rag.a2a.TaskManager;
+import com.example.rag.blog.AuthFilter;
+import com.example.rag.blog.BlogStore;
 import com.example.rag.chat.AgentStore;
 import com.example.rag.chat.ChatStore;
 import com.example.rag.config.AppConfiguration;
@@ -46,6 +48,8 @@ public class RagApplication {
     private static AgentCard agentCard;
     private static ChatStore chatStore;
     private static AgentStore agentStore;
+    private static BlogStore blogStore;
+    private static AuthFilter authFilter;
 
     public static void main(String[] args) {
         // 1. Load config
@@ -72,10 +76,14 @@ public class RagApplication {
         taskManager = new TaskManager();
         chatStore = new ChatStore();
         agentStore = new AgentStore();
+        blogStore = new BlogStore();
+        authFilter = new AuthFilter(config.getBlog().adminPassword);
+        int port = config.getServer().port;
+
         agentCard = AgentCard.create(
                 config.getA2a().agentName,
                 config.getA2a().agentDescription,
-                "http://localhost:" + 8080 + "/a2a/v1"
+                "http://localhost:" + port + "/a2a/v1"
         );
 
         // 5. Start Javalin server
@@ -88,11 +96,11 @@ public class RagApplication {
 
         registerRoutes(app);
 
-        app.start(8080);
+        app.start(port);
         System.out.println("========================================");
         System.out.println("  文枢 · 藏书阁  WenShu v1.0.0");
-        System.out.println("  http://localhost:8080");
-        System.out.println("  A2A endpoint: http://localhost:8080/a2a/v1");
+        System.out.println("  http://localhost:" + port);
+        System.out.println("  A2A endpoint: http://localhost:" + port + "/a2a/v1");
         System.out.println("========================================");
     }
 
@@ -316,6 +324,149 @@ public class RagApplication {
         app.get("/a2a/v1/tasks", ctx -> {
             List<Task> tasks = taskManager.listRecent(20);
             ctx.json(tasks);
+        });
+
+        // ===== Blog Public Routes =====
+        registerBlogRoutes(app);
+    }
+
+    private static void registerBlogRoutes(Javalin app) {
+
+        // --- Public: Blog Posts ---
+        app.get("/api/blog/posts", ctx -> {
+            int page = Integer.parseInt(ctx.queryParam("page") != null ? ctx.queryParam("page") : "1");
+            int size = Integer.parseInt(ctx.queryParam("size") != null ? ctx.queryParam("size") : String.valueOf(config.getBlog().postsPerPage));
+            String category = ctx.queryParam("category");
+            String tag = ctx.queryParam("tag");
+            ctx.json(blogStore.listPublished(page, size, category, tag));
+        });
+
+        app.get("/api/blog/posts/{slug}", ctx -> {
+            String slug = ctx.pathParam("slug");
+            BlogStore.Article article = blogStore.getBySlug(slug);
+            if (article == null) {
+                ctx.status(404).json(Map.of("error", "Article not found"));
+                return;
+            }
+            blogStore.incrementViewCount(article.id());
+            ctx.json(article);
+        });
+
+        app.get("/api/blog/categories", ctx -> ctx.json(blogStore.listCategories()));
+
+        app.get("/api/blog/tags", ctx -> ctx.json(blogStore.getAllTags()));
+
+        app.get("/api/blog/search", ctx -> {
+            String q = ctx.queryParam("q");
+            if (q == null || q.isBlank()) {
+                ctx.json(List.of());
+                return;
+            }
+            ctx.json(blogStore.searchArticles(q));
+        });
+
+        app.get("/api/blog/stats", ctx -> {
+            ctx.json(Map.of(
+                    "totalArticles", blogStore.countPublished(),
+                    "totalCategories", blogStore.listCategories().size(),
+                    "totalTags", blogStore.getAllTags().size(),
+                    "blogTitle", config.getBlog().title,
+                    "blogDescription", config.getBlog().description
+            ));
+        });
+
+        // --- Admin: Login ---
+        app.post("/api/admin/login", ctx -> {
+            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
+            String password = body.get("password");
+            if (password != null && password.equals(config.getBlog().adminPassword)) {
+                String token = AuthFilter.generateToken(password);
+                ctx.json(Map.of("token", token, "status", "ok"));
+            } else {
+                ctx.status(401).json(Map.of("error", "Invalid password"));
+            }
+        });
+
+        // --- Admin: All routes below require auth ---
+        String adminPath = "/api/admin";
+        app.before(adminPath + "/*", ctx -> {
+            String path = ctx.path();
+            if (path.equals(adminPath + "/login")) return;
+            authFilter.handle(ctx);
+        });
+
+        app.get("/api/admin/posts", ctx -> {
+            int page = Integer.parseInt(ctx.queryParam("page") != null ? ctx.queryParam("page") : "1");
+            int size = Integer.parseInt(ctx.queryParam("size") != null ? ctx.queryParam("size") : "20");
+            ctx.json(blogStore.listAll(page, size));
+        });
+
+        app.post("/api/admin/posts", ctx -> {
+            Map<String, Object> body = MAPPER.readValue(ctx.body(), MAP_TYPE);
+            String title = (String) body.get("title");
+            String content = (String) body.get("content");
+            String contentType = (String) body.getOrDefault("contentType", "md");
+            String category = (String) body.get("category");
+            List<String> tags = body.get("tags") instanceof List ? (List<String>) body.get("tags") : List.of();
+            if (title == null || title.isBlank()) {
+                ctx.status(400).json(Map.of("error", "title is required"));
+                return;
+            }
+            BlogStore.Article article = blogStore.createArticle(title, content != null ? content : "", contentType, category, tags);
+            ctx.json(article);
+        });
+
+        app.put("/api/admin/posts/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            Map<String, Object> body = MAPPER.readValue(ctx.body(), MAP_TYPE);
+            String title = (String) body.get("title");
+            String content = (String) body.get("content");
+            String category = (String) body.get("category");
+            List<String> tags = body.get("tags") instanceof List ? (List<String>) body.get("tags") : List.of();
+            if (title == null || title.isBlank()) {
+                ctx.status(400).json(Map.of("error", "title is required"));
+                return;
+            }
+            BlogStore.Article article = blogStore.updateArticle(id, title, content != null ? content : "", category, tags);
+            ctx.json(article);
+        });
+
+        app.delete("/api/admin/posts/{id}", ctx -> {
+            blogStore.deleteArticle(ctx.pathParam("id"));
+            ctx.json(Map.of("status", "ok"));
+        });
+
+        app.post("/api/admin/posts/{id}/publish", ctx -> {
+            BlogStore.Article article = blogStore.publishArticle(ctx.pathParam("id"));
+            ctx.json(article);
+        });
+
+        app.post("/api/admin/posts/{id}/unpublish", ctx -> {
+            BlogStore.Article article = blogStore.unpublishArticle(ctx.pathParam("id"));
+            ctx.json(article);
+        });
+
+        app.post("/api/admin/categories", ctx -> {
+            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
+            String name = body.get("name");
+            String slug = body.get("slug");
+            String description = body.getOrDefault("description", "");
+            if (name == null || name.isBlank() || slug == null || slug.isBlank()) {
+                ctx.status(400).json(Map.of("error", "name and slug are required"));
+                return;
+            }
+            ctx.json(blogStore.createCategory(name, slug, description));
+        });
+
+        app.put("/api/admin/categories/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
+            ctx.json(blogStore.updateCategory(id, body.get("name"), body.get("slug"), body.getOrDefault("description", "")));
+        });
+
+        app.delete("/api/admin/categories/{id}", ctx -> {
+            blogStore.deleteCategory(ctx.pathParam("id"));
+            ctx.json(Map.of("status", "ok"));
         });
     }
 

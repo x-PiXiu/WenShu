@@ -11,6 +11,9 @@
             <button :class="['nav-btn', { active: currentPage === 'chat' }]" @click="switchPage('chat')" title="藏书阁">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             </button>
+            <button :class="['nav-btn', { active: currentPage === 'blog' || currentPage === 'blog-detail' }]" @click="switchPage('blog')" title="博客">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            </button>
             <button :class="['nav-btn', { active: currentPage === 'knowledge' }]" @click="switchPage('knowledge')" title="知识库">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             </button>
@@ -21,6 +24,10 @@
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
           </nav>
+          <div class="sidebar-divider"></div>
+          <button :class="['nav-btn', { active: currentPage.startsWith('admin') }]" @click="isLoggedIn ? (currentPage = 'admin-posts') : (currentPage = 'admin')" title="管理后台">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </button>
           <div class="sidebar-status">
             <span :class="['status-dot', healthStatus === 'running' ? 'ok' : 'err']"></span>
           </div>
@@ -70,6 +77,46 @@
             <!-- Knowledge Base Page (知识库) -->
             <template v-if="currentPage === 'knowledge'">
               <KnowledgeBase />
+            </template>
+
+            <!-- Blog Page (博客) -->
+            <template v-if="currentPage === 'blog'">
+              <BlogList @open-article="openArticle" />
+            </template>
+
+            <!-- Blog Detail (文章详情) -->
+            <template v-if="currentPage === 'blog-detail'">
+              <BlogDetail :article="currentArticle" @back="switchPage('blog')" />
+            </template>
+
+            <!-- Admin Login -->
+            <template v-if="currentPage === 'admin'">
+              <div class="admin-login">
+                <div class="login-card">
+                  <h2 class="login-title">管理后台</h2>
+                  <p class="login-desc">请输入管理员密码</p>
+                  <input type="password" v-model="adminPassword" class="login-input"
+                         placeholder="密码" @keydown.enter="handleAdminLogin" />
+                  <p v-if="adminLoginError" class="login-error">密码错误</p>
+                  <button class="login-btn" @click="handleAdminLogin">登录</button>
+                </div>
+              </div>
+            </template>
+
+            <!-- Admin: Post List -->
+            <template v-if="currentPage === 'admin-posts'">
+              <div class="admin-page">
+                <div class="admin-topbar">
+                  <button :class="['admin-tab', { active: true }]" @click="currentPage = 'admin-posts'">文章管理</button>
+                  <button class="admin-logout-btn" @click="logout(); currentPage = 'chat'">退出</button>
+                </div>
+                <PostList @create="openEditor()" @edit="(a: Article) => openEditor(a)" />
+              </div>
+            </template>
+
+            <!-- Admin: Post Editor -->
+            <template v-if="currentPage === 'admin-editor'">
+              <PostEditor :edit-article="editingArticle" @back="currentPage = 'admin-posts'" @saved="onArticleSaved" />
             </template>
 
             <!-- A2A Page (A2A 节点) -->
@@ -150,11 +197,18 @@ import KnowledgeStats from './components/KnowledgeStats.vue'
 import AgentCard from './components/AgentCard.vue'
 import TaskList from './components/TaskList.vue'
 import ConversationList from './components/ConversationList.vue'
+import BlogList from './components/blog/BlogList.vue'
+import BlogDetail from './components/blog/BlogDetail.vue'
+import PostEditor from './components/admin/PostEditor.vue'
+import PostList from './components/admin/PostList.vue'
 import { useA2aClient } from './composables/useA2aClient'
 import { useSettings } from './composables/useSettings'
 import { useChat } from './composables/useChat'
 import { useAgents } from './composables/useAgents'
+import { useBlog } from './composables/useBlog'
+import { useAdmin } from './composables/useAdmin'
 import type { KnowledgeStats as Stats } from './types/chat'
+import type { Article } from './types/blog'
 
 const warmTheme: GlobalThemeOverrides = {
   common: {
@@ -178,14 +232,28 @@ const { agentCard, tasks, fetchAgentCard, fetchTasks } = useA2aClient()
 const { fetchStats } = useSettings()
 const { conversations, currentConversationId, loadConversations, createConversation, switchConversation, deleteConversation } = useChat()
 const { loadAgents } = useAgents()
+const { getPost } = useBlog()
+const { isLoggedIn, login, logout } = useAdmin()
 const stats = ref<Stats | null>(null)
+
+// Blog state
+const currentArticleSlug = ref<string | null>(null)
+const currentArticle = ref<Article | null>(null)
+const editingArticle = ref<Article | null>(null)
+const adminPassword = ref('')
+const adminLoginError = ref(false)
 
 const pageTitle = computed(() => {
   switch (currentPage.value) {
     case 'chat': return '文枢 · 藏书阁'
+    case 'blog': return '文枢 · 博客'
+    case 'blog-detail': return currentArticle.value?.title || '文枢 · 博客'
     case 'knowledge': return '文枢 · 知识库'
     case 'a2a': return '文枢 · A2A 节点'
     case 'settings': return '文枢 · 设置'
+    case 'admin': return '文枢 · 管理后台'
+    case 'admin-editor': return editingArticle.value ? '编辑文章' : '新建文章'
+    case 'admin-posts': return '文章管理'
     default: return ''
   }
 })
@@ -194,9 +262,40 @@ function switchPage(page: string) {
   if (page === 'a2a') {
     currentPage.value = 'a2a'
     fetchTasks()
+  } else if (page === 'blog') {
+    currentPage.value = 'blog'
+    currentArticleSlug.value = null
+    currentArticle.value = null
   } else {
     currentPage.value = page
   }
+}
+
+async function openArticle(slug: string) {
+  currentArticleSlug.value = slug
+  currentArticle.value = await getPost(slug)
+  currentPage.value = 'blog-detail'
+}
+
+async function handleAdminLogin() {
+  adminLoginError.value = false
+  const ok = await login(adminPassword.value)
+  if (ok) {
+    adminPassword.value = ''
+    currentPage.value = 'admin-posts'
+  } else {
+    adminLoginError.value = true
+  }
+}
+
+function openEditor(article?: Article) {
+  editingArticle.value = article || null
+  currentPage.value = 'admin-editor'
+}
+
+function onArticleSaved(article: Article) {
+  editingArticle.value = article
+  currentPage.value = 'admin-posts'
 }
 
 async function checkHealth() {
@@ -398,4 +497,48 @@ body {
 }
 .side-panel-toggle:hover { background: #FAF7F2; color: #E8913A; }
 .side-panel-content { width: 320px; overflow-y: auto; padding: 16px 12px; }
+.sidebar-divider { width: 28px; height: 1px; background: #5A4E44; margin: 8px 0; }
+
+/* Admin Login */
+.admin-login {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  background: #F8F5EF;
+}
+.login-card {
+  background: #FFFFFF; border: 1px solid #E8DDD0; border-radius: 16px;
+  padding: 40px; width: 360px; text-align: center;
+}
+.login-title { font-size: 20px; font-weight: 600; color: #3D3028; margin: 0 0 8px; }
+.login-desc { font-size: 14px; color: #8B7E74; margin: 0 0 24px; }
+.login-input {
+  width: 100%; padding: 10px 16px; border: 1px solid #E8DDD0; border-radius: 10px;
+  font-size: 14px; color: #3D3028; outline: none; margin-bottom: 8px;
+  box-sizing: border-box;
+}
+.login-input:focus { border-color: #D97B2B; }
+.login-error { font-size: 13px; color: #E85D5D; margin: 0 0 12px; }
+.login-btn {
+  width: 100%; padding: 10px; border: none; border-radius: 10px;
+  background: #D97B2B; color: #FFFFFF; font-size: 14px; font-weight: 500;
+  cursor: pointer; transition: background 0.2s;
+}
+.login-btn:hover { background: #C06A1E; }
+
+/* Admin Page */
+.admin-page { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.admin-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; border-bottom: 1px solid #E8DDD0; background: #FFFFFF; height: 48px;
+  flex-shrink: 0;
+}
+.admin-tab {
+  border: none; background: none; color: #D97B2B; font-size: 14px;
+  font-weight: 500; cursor: pointer; padding: 12px 0;
+  border-bottom: 2px solid #D97B2B;
+}
+.admin-logout-btn {
+  border: 1px solid #E8DDD0; border-radius: 6px; background: #FFFFFF;
+  color: #8B7E74; font-size: 12px; padding: 4px 12px; cursor: pointer;
+}
+.admin-logout-btn:hover { border-color: #E85D5D; color: #E85D5D; }
 </style>
