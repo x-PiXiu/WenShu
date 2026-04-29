@@ -310,6 +310,10 @@ public class BlogStore {
         return countWhere("WHERE status = 'published'", Collections.emptyList());
     }
 
+    public List<Article> listAllPublished() {
+        return queryArticles("WHERE status = 'published' ORDER BY published_at DESC", Collections.emptyList(), 0, 0);
+    }
+
     public int countByCategory(String category) {
         return countWhere("WHERE status = 'published' AND category = ?", List.of(category));
     }

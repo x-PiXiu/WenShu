@@ -17,6 +17,7 @@ import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.model.output.Response;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
@@ -86,6 +87,19 @@ public class RagApplication {
         blogIndexer = new BlogIndexer(ragService);
         blogStore.setBlogIndexer(blogIndexer);
         mediaStore = new MediaStore();
+
+        // 4.1 Re-index published blog articles (InMemory vector store loses data on restart)
+        try {
+            var publishedArticles = blogStore.listAllPublished();
+            if (!publishedArticles.isEmpty()) {
+                for (var article : publishedArticles) {
+                    blogIndexer.indexArticle(article);
+                }
+                System.out.println("[INIT] Blog articles indexed: " + publishedArticles.size() + " articles");
+            }
+        } catch (Exception e) {
+            System.err.println("[WARN] Blog article re-indexing failed: " + e.getMessage());
+        }
         authFilter = new AuthFilter(config.getBlog().adminPassword);
         int port = config.getServer().port;
 
@@ -100,7 +114,6 @@ public class RagApplication {
             javalinConfig.bundledPlugins.enableCors(cors -> {
                 cors.addRule(it -> it.anyHost());
             });
-            javalinConfig.staticFiles.add("uploads", io.javalin.http.staticfiles.Location.EXTERNAL);
             javalinConfig.requestLogger.http((ctx, ms) -> {
                 String method = ctx.method().toString();
                 String path = ctx.path();
@@ -114,6 +127,29 @@ public class RagApplication {
         });
 
         registerRoutes(app);
+
+        // 静态文件服务：/uploads/{filename}
+        Path uploadsDir = Path.of("uploads").toAbsolutePath();
+        try { if (!Files.exists(uploadsDir)) Files.createDirectories(uploadsDir); }
+        catch (java.io.IOException e) { System.err.println("[WARN] Cannot create uploads dir: " + e.getMessage()); }
+        app.get("/uploads/{filename}", ctx -> {
+            String filename = ctx.pathParam("filename");
+            Path file = uploadsDir.resolve(filename).normalize();
+            if (!file.startsWith(uploadsDir) || !Files.exists(file)) {
+                ctx.status(404).result("Not found");
+                return;
+            }
+            String name = file.getFileName().toString().toLowerCase();
+            String contentType = name.endsWith(".png") ? "image/png"
+                    : name.endsWith(".jpg") || name.endsWith(".jpeg") ? "image/jpeg"
+                    : name.endsWith(".gif") ? "image/gif"
+                    : name.endsWith(".svg") ? "image/svg+xml"
+                    : name.endsWith(".webp") ? "image/webp"
+                    : name.endsWith(".pdf") ? "application/pdf"
+                    : "application/octet-stream";
+            ctx.contentType(contentType);
+            ctx.result(Files.newInputStream(file));
+        });
 
         app.start(port);
         System.out.println("========================================");
@@ -396,14 +432,23 @@ public class RagApplication {
 
         // --- Blog Chat API ---
         app.post("/api/blog/chat", ctx -> {
-            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
-            String question = body.get("question");
-            if (question == null || question.isBlank()) {
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String question = root.path("question").asText("");
+
+            if (question.isBlank()) {
                 ctx.status(400).json(Map.of("error", "question is required"));
                 return;
             }
+            String slug = root.path("slug").asText(null);
             try {
-                RagService.RagAnswer answer = ragService.askBlog(question, List.of(), null);
+                BlogStore.Article article = blogStore.getBySlug(slug);
+                if (article == null) {
+                    ctx.status(404).json(Map.of("error", "Article not found"));
+                    return;
+                }
+                List<RagService.HistoryEntry> history = parseBlogChatHistory(root.path("history"));
+                RagService.RagAnswer answer = ragService.askBlogDirect(question, history,
+                        article.title(), article.content(), null);
                 ctx.json(Map.of("answer", answer.answer(), "sources", answer.sources()));
             } catch (Exception e) {
                 ctx.status(500).json(Map.of("error", "Failed to process question: " + e.getMessage()));
@@ -411,14 +456,23 @@ public class RagApplication {
         });
 
         app.post("/api/blog/chat/stream", ctx -> {
-            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
-            String question = body.get("question");
-            if (question == null || question.isBlank()) {
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String question = root.path("question").asText("");
+            if (question.isBlank()) {
                 ctx.status(400).json(Map.of("error", "question is required"));
                 return;
             }
+            String slug = root.path("slug").asText(null);
 
-            RagService.StreamContext streamCtx = ragService.prepareBlogStreamContext(question, List.of(), null);
+            BlogStore.Article article = blogStore.getBySlug(slug);
+            if (article == null) {
+                ctx.status(404).json(Map.of("error", "Article not found"));
+                return;
+            }
+
+            List<RagService.HistoryEntry> history = parseBlogChatHistory(root.path("history"));
+            RagService.StreamContext streamCtx = ragService.prepareBlogDirectStreamContext(
+                    question, history, article.title(), article.content(), null);
 
             ctx.res().setContentType("text/event-stream; charset=UTF-8");
             ctx.res().setHeader("Cache-Control", "no-cache");
@@ -426,10 +480,6 @@ public class RagApplication {
             ctx.res().setHeader("X-Accel-Buffering", "no");
 
             var writer = ctx.res().getWriter();
-
-            String sourcesJson = MAPPER.writeValueAsString(streamCtx.sources());
-            writer.write("event: sources\ndata: " + sourcesJson + "\n\n");
-            writer.flush();
 
             StringBuilder fullAnswer = new StringBuilder();
             CountDownLatch latch = new CountDownLatch(1);
@@ -909,6 +959,21 @@ public class RagApplication {
         AgentStore.Agent def = agentStore.getById("default");
         if (def != null) return def.systemPrompt();
         return null; // RagPromptTemplate will use its own hardcoded default
+    }
+
+    private static List<RagService.HistoryEntry> parseBlogChatHistory(JsonNode historyNode) {
+        if (historyNode == null || !historyNode.isArray() || historyNode.isEmpty()) return List.of();
+        List<RagService.HistoryEntry> result = new ArrayList<>();
+        for (JsonNode item : historyNode) {
+            String role = item.path("role").asText("");
+            String content = item.path("content").asText("");
+            if (!role.isBlank() && !content.isBlank()) {
+                result.add(new RagService.HistoryEntry(role, content));
+            }
+        }
+        // Keep only last 10 entries to avoid excessive context
+        int start = Math.max(0, result.size() - 10);
+        return result.subList(start, result.size());
     }
 
     // ===== A2A Handlers =====

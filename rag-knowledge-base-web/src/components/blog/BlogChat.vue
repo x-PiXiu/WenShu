@@ -62,7 +62,11 @@ async function send() {
     const res = await fetch('/api/blog/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q }),
+      body: JSON.stringify({
+        question: q,
+        slug: props.slug,
+        history: messages.value.filter(m => m.content).map(m => ({ role: m.role, content: m.content })),
+      }),
     })
 
     if (!res.ok || !res.body) {

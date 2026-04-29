@@ -162,7 +162,7 @@ public class RagService {
                 .toList();
 
         String prompt = RagPromptTemplate.build(question, refs);
-        String answer = chatModel.generate(prompt);
+        String answer = stripThinkTags(chatModel.generate(prompt));
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
@@ -224,7 +224,7 @@ public class RagService {
         messages.add(UserMessage.from(question));
 
         Response<AiMessage> response = chatModel.generate(messages);
-        String answer = response.content().text();
+        String answer = stripThinkTags(response.content().text());
         if (answer == null) {
             answer = "未能生成回答。";
         }
@@ -318,7 +318,7 @@ public class RagService {
                 prompt.append("助手: ").append(content).append("\n");
             }
         }
-        return chatModel.generate(prompt.toString());
+        return stripThinkTags(chatModel.generate(prompt.toString()));
     }
 
     /**
@@ -397,26 +397,34 @@ public class RagService {
     // ===== Blog Article Indexing =====
 
     /**
-     * 索引博客文章到向量库
+     * 索引博客文章到向量库（自动分块）
      */
     public synchronized void indexBlogArticle(String articleId, String slug, String title, String content, String category) {
         String source = "blog:" + slug;
-        Metadata meta = new Metadata();
-        meta.add("source", source);
-        meta.add("type", "blog");
-        meta.add("articleId", articleId);
-        meta.add("title", title);
-        meta.add("category", category != null ? category : "");
+        Metadata baseMeta = new Metadata();
+        baseMeta.add("source", source);
+        baseMeta.add("type", "blog");
+        baseMeta.add("articleId", articleId);
+        baseMeta.add("title", title);
+        baseMeta.add("category", category != null ? category : "");
 
-        TextSegment segment = TextSegment.from(title + "\n\n" + content, meta);
-        Embedding embedding = embeddingModel.embed(segment.text()).content();
-        String id;
-        synchronized (indexLock) {
-            id = store.add(embedding, segment);
-            searcher.indexSegment(id, segment.text(), source);
-            segmentCount++;
+        // Split article into chunks to avoid exceeding embedding model token limit
+        DocumentSplitter articleSplitter = createSplitter("ARTICLE");
+        Document doc = new Document(title + "\n\n" + content, baseMeta);
+        List<TextSegment> segments = articleSplitter.split(doc);
+
+        int indexed = 0;
+        for (TextSegment segment : segments) {
+            Embedding embedding = embeddingModel.embed(segment.text()).content();
+            String id;
+            synchronized (indexLock) {
+                id = store.add(embedding, segment);
+                searcher.indexSegment(id, segment.text(), source);
+                segmentCount++;
+            }
+            indexed++;
         }
-        System.out.println("[BLOG-INDEX] Indexed article: " + slug + " (segment " + id + ")");
+        System.out.println("[BLOG-INDEX] Indexed article: " + slug + " (" + indexed + " segments)");
     }
 
     /**
@@ -431,10 +439,82 @@ public class RagService {
     }
 
     /**
-     * 博客专属 RAG 问答（限定 blog: 来源）
+     * 博客文章直接问答：用文章全文作为上下文，无需向量检索
      */
-    public RagAnswer askBlog(String question, List<HistoryEntry> history, String agentPrompt) {
-        List<SearchResult> results = searcher.search(question, "blog:");
+    public RagAnswer askBlogDirect(String question, List<HistoryEntry> history,
+                                   String articleTitle, String articleContent, String agentPrompt) {
+        StringBuilder systemContent = new StringBuilder();
+        systemContent.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : BLOG_SYSTEM_PROMPT);
+        systemContent.append("\n\n【当前文章】\n");
+        systemContent.append("标题：").append(articleTitle).append("\n\n");
+        systemContent.append(articleContent);
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from(systemContent.toString()));
+
+        int start = Math.max(0, history.size() - 10);
+        for (int i = start; i < history.size(); i++) {
+            HistoryEntry entry = history.get(i);
+            if ("user".equals(entry.role())) {
+                messages.add(UserMessage.from(entry.content()));
+            } else if ("assistant".equals(entry.role())) {
+                messages.add(AiMessage.from(entry.content()));
+            }
+        }
+        messages.add(UserMessage.from(question));
+
+        Response<AiMessage> response = chatModel.generate(messages);
+        String answer = stripThinkTags(response.content().text());
+        if (answer == null) answer = "未能生成回答。";
+
+        return new RagAnswer(answer, List.of(), List.of());
+    }
+
+    /**
+     * 博客文章直接问答（流式）：准备消息列表
+     */
+    public StreamContext prepareBlogDirectStreamContext(String question, List<HistoryEntry> history,
+                                                        String articleTitle, String articleContent, String agentPrompt) {
+        StringBuilder systemContent = new StringBuilder();
+        systemContent.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : BLOG_SYSTEM_PROMPT);
+        systemContent.append("\n\n【当前文章】\n");
+        systemContent.append("标题：").append(articleTitle).append("\n\n");
+        systemContent.append(articleContent);
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(SystemMessage.from(systemContent.toString()));
+
+        int start = Math.max(0, history.size() - 10);
+        for (int i = start; i < history.size(); i++) {
+            HistoryEntry entry = history.get(i);
+            if ("user".equals(entry.role())) {
+                messages.add(UserMessage.from(entry.content()));
+            } else if ("assistant".equals(entry.role())) {
+                messages.add(AiMessage.from(entry.content()));
+            }
+        }
+        messages.add(UserMessage.from(question));
+
+        return new StreamContext(messages, List.of());
+    }
+
+    private static final String BLOG_SYSTEM_PROMPT = """
+            你是「文枢·博客」的智能助手，专门回答关于当前文章的问题。
+            你已经收到了用户正在阅读的完整文章内容，请严格基于该文章内容回答。
+
+            ## 回答原则
+            - 严格基于【当前文章】的内容回答，不编造、不推测、不引入外部知识。
+            - 使用中文回答，语言清晰流畅，适当使用 Markdown 格式提升可读性。
+            - 支持多轮对话，结合历史上下文理解用户的追问。
+            - 如果问题与文章内容无关，礼貌地引导用户围绕文章内容提问。
+            """;
+
+    /**
+     * 博客专属 RAG 问答（可限定到特定文章）
+     */
+    public RagAnswer askBlog(String question, List<HistoryEntry> history, String agentPrompt, String slug) {
+        String sourcePrefix = slug != null && !slug.isBlank() ? "blog:" + slug : "blog:";
+        List<SearchResult> results = searcher.search(question, sourcePrefix);
 
         List<Reference> refs = results.stream()
                 .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
@@ -457,7 +537,7 @@ public class RagService {
         messages.add(UserMessage.from(question));
 
         Response<AiMessage> response = chatModel.generate(messages);
-        String answer = response.content().text();
+        String answer = stripThinkTags(response.content().text());
         if (answer == null) answer = "未能生成回答。";
 
         List<SourceInfo> sources = new ArrayList<>();
@@ -477,7 +557,15 @@ public class RagService {
      * 博客专属流式上下文
      */
     public StreamContext prepareBlogStreamContext(String question, List<HistoryEntry> history, String agentPrompt) {
-        List<SearchResult> results = searcher.search(question, "blog:");
+        return prepareBlogStreamContext(question, history, agentPrompt, null);
+    }
+
+    /**
+     * 博客专属流式上下文（可限定到特定文章）
+     */
+    public StreamContext prepareBlogStreamContext(String question, List<HistoryEntry> history, String agentPrompt, String slug) {
+        String sourcePrefix = slug != null && !slug.isBlank() ? "blog:" + slug : "blog:";
+        List<SearchResult> results = searcher.search(question, sourcePrefix);
 
         List<Reference> refs = results.stream()
                 .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
@@ -508,6 +596,17 @@ public class RagService {
         }
 
         return new StreamContext(messages, sources);
+    }
+
+    // ===== LLM Output Utilities =====
+
+    /**
+     * 去除 LLM 输出中的 <think</think\> 思考过程标签
+     * 兼容 DeepSeek 等支持思考模式的模型
+     */
+    public static String stripThinkTags(String text) {
+        if (text == null) return null;
+        return text.replaceAll("(?s)<think\\s*>.*?</\\s*think\\s*>", "").trim();
     }
 
     // ===== Stats =====

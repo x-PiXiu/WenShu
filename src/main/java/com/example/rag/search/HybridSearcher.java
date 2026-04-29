@@ -80,17 +80,24 @@ public class HybridSearcher {
 
     /**
      * 混合搜索（按 source 前缀过滤）
+     * 扩大搜索范围，避免目标来源的结果被知识库结果挤出 topK
      */
     public List<SearchResult> search(String query, String sourcePrefix) {
-        List<EmbeddingMatch<TextSegment>> vectorResults = vectorSearch(query);
+        int expandedTopK = vectorTopK * 10;
+        List<EmbeddingMatch<TextSegment>> vectorResults = vectorSearch(query, expandedTopK);
         List<KeywordMatch> keywordResults = keywordSearch(query);
-        List<SearchResult> all = rrfFusion(vectorResults, keywordResults);
+        // Keep BM25-only results for filtered search (some relevant segments may lack vector match)
+        List<SearchResult> all = rrfFusion(vectorResults, keywordResults, expandedTopK, false);
         return all.stream()
                 .filter(r -> r.source().startsWith(sourcePrefix))
                 .toList();
     }
 
     List<EmbeddingMatch<TextSegment>> vectorSearch(String query) {
+        return vectorSearch(query, vectorTopK);
+    }
+
+    List<EmbeddingMatch<TextSegment>> vectorSearch(String query, int maxResults) {
         Embedding queryEmbedding;
         synchronized (embeddingCache) {
             queryEmbedding = embeddingCache.get(query);
@@ -103,7 +110,7 @@ public class HybridSearcher {
         }
         EmbeddingSearchRequest request = EmbeddingSearchRequest.builder()
                 .queryEmbedding(queryEmbedding)
-                .maxResults(vectorTopK)
+                .maxResults(maxResults)
                 .minScore(minScore)
                 .build();
 
@@ -153,10 +160,18 @@ public class HybridSearcher {
     }
 
     /**
-     * RRF 融合
+     * RRF 融合（全局搜索，丢弃纯 BM25 结果）
      */
     List<SearchResult> rrfFusion(List<EmbeddingMatch<TextSegment>> vectorResults,
                                 List<KeywordMatch> keywordResults) {
+        return rrfFusion(vectorResults, keywordResults, vectorTopK, true);
+    }
+
+    /**
+     * RRF 融合（可配置是否保留纯 BM25 结果）
+     */
+    List<SearchResult> rrfFusion(List<EmbeddingMatch<TextSegment>> vectorResults,
+                                List<KeywordMatch> keywordResults, int limit, boolean requireVector) {
 
         Map<String, Double> scoreMap = new HashMap<>();
         Map<String, EmbeddingMatch<TextSegment>> matchMap = new HashMap<>();
@@ -177,7 +192,7 @@ public class HybridSearcher {
 
         return scoreMap.entrySet().stream()
                 .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
-                .limit(vectorTopK)
+                .limit(limit)
                 .map(e -> {
                     String id = e.getKey();
                     EmbeddingMatch<TextSegment> match = matchMap.get(id);
@@ -188,15 +203,12 @@ public class HybridSearcher {
                                 source != null ? source : "unknown",
                                 match.score());
                     }
-                    // Pure keyword hit — no vector support
                     return new SearchResult(id, e.getValue(),
                             segmentTextMap.getOrDefault(id, ""),
                             segmentSourceMap.getOrDefault(id, "unknown"),
                             0.0);
                 })
-                // Final quality gate: reject pure keyword-only results (vectorScore=0)
-                // Results must have at least some vector similarity support
-                .filter(r -> r.vectorScore() > 0)
+                .filter(r -> !requireVector || r.vectorScore() > 0)
                 .toList();
     }
 
