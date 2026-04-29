@@ -15,10 +15,20 @@
         基于当前文章内容进行智能问答
       </div>
       <div v-for="(msg, i) in messages" :key="i" :class="['chat-msg', msg.role]">
-        <div class="msg-content">{{ msg.content }}</div>
-      </div>
-      <div v-if="loading" class="chat-msg assistant">
-        <div class="msg-content typing">思考中...</div>
+        <template v-if="msg.role === 'assistant'">
+          <!-- Thinking block -->
+          <div v-if="msg.thinking" class="thinking-block" :class="{ collapsed: !msg.thinkingExpanded }">
+            <div class="thinking-header" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
+              <svg class="thinking-chevron" :class="{ rotated: msg.thinkingExpanded }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              <span class="thinking-label">{{ msg.isThinking ? '思考中...' : '思考过程' }}</span>
+              <span v-if="msg.isThinking" class="thinking-dots"><span></span><span></span><span></span></span>
+            </div>
+            <div class="thinking-content">{{ msg.thinking }}</div>
+          </div>
+          <div v-if="msg.isThinking && !msg.thinking" class="thinking-dots"><span></span><span></span><span></span></div>
+          <div v-if="msg.content" class="msg-content"><MarkdownRenderer :content="msg.content" /></div>
+        </template>
+        <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
     </div>
     <div class="chat-input-area">
@@ -33,19 +43,61 @@
 
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
+import MarkdownRenderer from '../MarkdownRenderer.vue'
+
+interface BlogMessage {
+  role: 'user' | 'assistant'
+  content: string
+  thinking?: string
+  isThinking?: boolean
+  thinkingExpanded?: boolean
+}
 
 const props = defineProps<{ slug: string }>()
 
 const isOpen = ref(false)
 const input = ref('')
 const loading = ref(false)
-const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
+const messages = ref<BlogMessage[]>([])
 const messagesRef = ref<HTMLElement | null>(null)
 
 async function scrollToBottom() {
   await nextTick()
   if (messagesRef.value) {
     messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+  }
+}
+
+function updateThinkingState(msg: BlogMessage, fullText: string) {
+  const openIdx = fullText.indexOf('<think')
+  if (openIdx === -1) {
+    msg.thinking = undefined
+    msg.isThinking = false
+    msg.content = fullText
+    return
+  }
+
+  const tagEnd = fullText.indexOf('>', openIdx)
+  if (tagEnd === -1) {
+    msg.isThinking = true
+    msg.content = ''
+    msg.thinking = ''
+    return
+  }
+
+  const closeTag = '</think'
+  const closeIdx = fullText.indexOf(closeTag, tagEnd)
+  if (closeIdx === -1) {
+    msg.isThinking = true
+    msg.thinking = fullText.substring(tagEnd + 1)
+    msg.content = ''
+  } else {
+    msg.isThinking = false
+    msg.thinking = fullText.substring(tagEnd + 1, closeIdx).trim()
+    msg.thinkingExpanded = false
+    const afterClose = fullText.substring(closeIdx + closeTag.length)
+    const closeGt = afterClose.indexOf('>')
+    msg.content = closeGt !== -1 ? afterClose.substring(closeGt + 1).trim() : ''
   }
 }
 
@@ -58,6 +110,15 @@ async function send() {
   loading.value = true
   await scrollToBottom()
 
+  const assistantMsg: BlogMessage = {
+    role: 'assistant',
+    content: '',
+    thinking: undefined,
+    isThinking: false,
+    thinkingExpanded: true,
+  }
+  messages.value = [...messages.value, assistantMsg]
+
   try {
     const res = await fetch('/api/blog/chat/stream', {
       method: 'POST',
@@ -65,46 +126,84 @@ async function send() {
       body: JSON.stringify({
         question: q,
         slug: props.slug,
-        history: messages.value.filter(m => m.content).map(m => ({ role: m.role, content: m.content })),
+        history: messages.value
+          .filter(m => m.content)
+          .slice(0, -1) // exclude the empty assistant message we just added
+          .map(m => ({ role: m.role, content: m.content })),
       }),
     })
 
     if (!res.ok || !res.body) {
-      const err = await res.text()
-      messages.value = [...messages.value, { role: 'assistant', content: '请求失败: ' + err }]
+      assistantMsg.content = '请求失败，请重试'
+      assistantMsg.isThinking = false
       return
     }
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
-    let answer = ''
-    let buffer = ''
+    let sseBuffer = ''
+    let fullText = ''
 
-    messages.value = [...messages.value, { role: 'assistant', content: '' }]
+    const handleSSEPart = (part: string) => {
+      let eventType = 'message'
+      let eventData = ''
+
+      for (const line of part.split('\n')) {
+        if (line.startsWith('event: ')) {
+          eventType = line.substring(7)
+        } else if (line.startsWith('data: ')) {
+          eventData = line.substring(6)
+        }
+      }
+
+      if (!eventData) return
+
+      try {
+        if (eventType === 'token') {
+          const { t } = JSON.parse(eventData)
+          fullText += t
+          updateThinkingState(assistantMsg, fullText)
+        } else if (eventType === 'done') {
+          const doneData = JSON.parse(eventData)
+          fullText = doneData.answer || fullText
+          updateThinkingState(assistantMsg, fullText)
+          assistantMsg.isThinking = false
+        } else if (eventType === 'error') {
+          const errData = JSON.parse(eventData)
+          assistantMsg.content = 'Error: ' + (errData.error || 'Unknown error')
+          assistantMsg.isThinking = false
+        }
+      } catch { /* skip malformed JSON */ }
+    }
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      buffer += decoder.decode(value, { stream: true })
 
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
+      sseBuffer += decoder.decode(value, { stream: true })
 
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(line.slice(6))
-            if (data.t) {
-              answer += data.t
-              messages.value = [...messages.value.slice(0, -1), { role: 'assistant', content: answer }]
-              await scrollToBottom()
-            }
-          } catch { /* ignore parse errors */ }
-        }
+      const parts = sseBuffer.split('\n\n')
+      sseBuffer = parts.pop() || ''
+
+      for (const part of parts) {
+        handleSSEPart(part)
+      }
+      await scrollToBottom()
+    }
+
+    // Handle remaining buffer after stream closes
+    if (sseBuffer.trim()) {
+      for (const part of sseBuffer.split('\n\n')) {
+        if (part.trim()) handleSSEPart(part)
       }
     }
+
+    if (assistantMsg.isThinking) {
+      assistantMsg.isThinking = false
+    }
   } catch {
-    messages.value = [...messages.value, { role: 'assistant', content: '网络错误，请重试' }]
+    assistantMsg.content = '网络错误，请重试'
+    assistantMsg.isThinking = false
   } finally {
     loading.value = false
     await scrollToBottom()
@@ -125,7 +224,7 @@ async function send() {
 
 .chat-panel {
   position: fixed; bottom: 28px; right: 28px;
-  width: 380px; height: 500px;
+  width: 400px; height: 520px;
   background: #FFFFFF; border: 1px solid #E8DDD0;
   border-radius: 16px; display: flex; flex-direction: column;
   box-shadow: 0 8px 32px rgba(61,48,40,0.15);
@@ -157,7 +256,7 @@ async function send() {
 .chat-msg.assistant { align-self: flex-start; }
 .msg-content {
   padding: 8px 14px; border-radius: 12px;
-  font-size: 13px; line-height: 1.6; white-space: pre-wrap;
+  font-size: 13px; line-height: 1.6;
 }
 .chat-msg.user .msg-content {
   background: #D97B2B; color: #FFFFFF; border-bottom-right-radius: 4px;
@@ -165,7 +264,47 @@ async function send() {
 .chat-msg.assistant .msg-content {
   background: #F5F0EB; color: #3D3028; border-bottom-left-radius: 4px;
 }
-.typing { color: #8B7E74; font-style: italic; }
+
+/* Thinking Block */
+.thinking-block {
+  margin-bottom: 6px;
+  border: 1px solid #E8DDD0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #FAF7F2;
+}
+.thinking-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; cursor: pointer;
+  font-size: 11px; color: #8B7E74;
+}
+.thinking-header:hover { background: #F5F0EB; }
+.thinking-chevron { transition: transform 0.25s ease; flex-shrink: 0; }
+.thinking-chevron.rotated { transform: rotate(180deg); }
+.thinking-label { font-weight: 500; color: #A89888; }
+.thinking-content {
+  max-height: 150px; overflow-y: auto;
+  padding: 4px 10px 8px; border-top: 1px solid #E8DDD0;
+  font-size: 11px; color: #8B7E74; line-height: 1.5;
+}
+.thinking-block.collapsed .thinking-content {
+  max-height: 0; padding: 0 10px; border-top-color: transparent; overflow: hidden;
+}
+
+.thinking-dots {
+  display: inline-flex; gap: 3px; padding: 4px 0;
+}
+.thinking-dots span {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #D4C8BA;
+  animation: dotBounce 1.4s infinite both;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes dotBounce {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1.1); }
+}
 
 .chat-input-area {
   display: flex; gap: 8px; padding: 12px 14px;
