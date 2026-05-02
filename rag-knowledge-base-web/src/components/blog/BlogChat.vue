@@ -51,6 +51,7 @@ interface BlogMessage {
   thinking?: string
   isThinking?: boolean
   thinkingExpanded?: boolean
+  status?: { phase: string; message: string; segments?: number }
 }
 
 const props = defineProps<{ slug: string }>()
@@ -110,14 +111,15 @@ async function send() {
   loading.value = true
   await scrollToBottom()
 
-  const assistantMsg: BlogMessage = {
+  // Push empty assistant message and get the reactive proxy back from the array
+  messages.value.push({
     role: 'assistant',
     content: '',
     thinking: undefined,
     isThinking: false,
     thinkingExpanded: true,
-  }
-  messages.value = [...messages.value, assistantMsg]
+  })
+  const assistantMsg = messages.value[messages.value.length - 1]
 
   try {
     const res = await fetch('/api/blog/chat/stream', {
@@ -159,15 +161,20 @@ async function send() {
       if (!eventData) return
 
       try {
-        if (eventType === 'token') {
+        if (eventType === 'status') {
+          const status = JSON.parse(eventData)
+          assistantMsg.status = { phase: status.phase, message: status.message, segments: status.segments }
+        } else if (eventType === 'token') {
           const { t } = JSON.parse(eventData)
           fullText += t
+          assistantMsg.status = undefined
           updateThinkingState(assistantMsg, fullText)
         } else if (eventType === 'done') {
           const doneData = JSON.parse(eventData)
           fullText = doneData.answer || fullText
           updateThinkingState(assistantMsg, fullText)
           assistantMsg.isThinking = false
+          assistantMsg.status = undefined
         } else if (eventType === 'error') {
           const errData = JSON.parse(eventData)
           assistantMsg.content = 'Error: ' + (errData.error || 'Unknown error')

@@ -371,5 +371,6 @@ public class ChatStore {
     public record Conversation(String id, String title, String agentId, long createdAt, long updatedAt) {}
     public record Message(int id, String conversationId, String role, String content,
                           List<MessageSource> sources, long createdAt) {}
-    public record MessageSource(int index, String text, String source, double rrfScore, double vectorScore) {}
+    public record MessageSource(int index, String text, String source, double rrfScore, double vectorScore,
+                                 double confidence, String confidenceLabel, String explanation) {}
 }

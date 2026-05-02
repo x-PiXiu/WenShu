@@ -175,6 +175,7 @@ public class HybridSearcher {
 
         Map<String, Double> scoreMap = new HashMap<>();
         Map<String, EmbeddingMatch<TextSegment>> matchMap = new HashMap<>();
+        Set<String> keywordIds = new HashSet<>();
 
         for (int i = 0; i < vectorResults.size(); i++) {
             EmbeddingMatch<TextSegment> match = vectorResults.get(i);
@@ -188,28 +189,122 @@ public class HybridSearcher {
             String id = keywordResults.get(i).segmentId();
             double rrfScore = 1.0 / (rrfK + i + 1);
             scoreMap.merge(id, rrfScore, Double::sum);
+            keywordIds.add(id);
         }
 
-        return scoreMap.entrySet().stream()
+        double maxRrfScore = scoreMap.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
+
+        List<Map.Entry<String, Double>> sorted = scoreMap.entrySet().stream()
                 .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
                 .limit(limit)
-                .map(e -> {
-                    String id = e.getKey();
-                    EmbeddingMatch<TextSegment> match = matchMap.get(id);
-                    if (match != null) {
-                        String source = match.embedded().metadata().getString("source");
-                        return new SearchResult(id, e.getValue(),
-                                match.embedded().text(),
-                                source != null ? source : "unknown",
-                                match.score());
-                    }
-                    return new SearchResult(id, e.getValue(),
-                            segmentTextMap.getOrDefault(id, ""),
-                            segmentSourceMap.getOrDefault(id, "unknown"),
-                            0.0);
-                })
-                .filter(r -> !requireVector || r.vectorScore() > 0)
                 .toList();
+
+        List<SearchResult> results = new ArrayList<>();
+        int rank = 0;
+        for (Map.Entry<String, Double> e : sorted) {
+            rank++;
+            String id = e.getKey();
+            EmbeddingMatch<TextSegment> match = matchMap.get(id);
+            boolean dualHit = match != null && keywordIds.contains(id);
+            boolean vectorHit = match != null;
+            boolean keywordHit = keywordIds.contains(id);
+            double vectorScore = match != null ? match.score() : 0.0;
+
+            String text, source, breadcrumb;
+            if (match != null) {
+                source = match.embedded().metadata().getString("source");
+                breadcrumb = match.embedded().metadata().getString("breadcrumb");
+                text = match.embedded().text();
+            } else {
+                text = segmentTextMap.getOrDefault(id, "");
+                source = segmentSourceMap.getOrDefault(id, "unknown");
+                breadcrumb = "";
+            }
+
+            if (requireVector && vectorScore <= 0) continue;
+
+            // Lookup parent context for hierarchical enrichment
+            String parentContext = "";
+            if (match != null) {
+                String parentBc = match.embedded().metadata().getString("parentBreadcrumb");
+                if (parentBc != null && !parentBc.isEmpty()) {
+                    String src = source != null ? source : "unknown";
+                    parentContext = findParentContext(src, parentBc);
+                }
+            }
+
+            results.add(new SearchResult(id, e.getValue(), text,
+                    source != null ? source : "unknown",
+                    vectorScore, breadcrumb != null ? breadcrumb : "",
+                    parentContext,
+                    calculateConfidence(dualHit, vectorHit, keywordHit, vectorScore, e.getValue(), maxRrfScore, rank),
+                    generateExplanation(dualHit, vectorHit, keywordHit, vectorScore)));
+        }
+        return results;
+    }
+
+    /**
+     * 计算检索置信度（0-1）
+     * 综合考虑：双路命中、向量得分、RRF 排名、结果位置
+     */
+    static double calculateConfidence(boolean dualHit, boolean vectorHit, boolean keywordHit,
+                                       double vectorScore, double rrfScore, double maxRrfScore, int rank) {
+        double score = 0.0;
+
+        // 双路命中加分（最强信号）
+        if (dualHit) score += 0.30;
+        else if (vectorHit) score += 0.10;
+        else if (keywordHit) score += 0.10;
+
+        // 向量绝对得分
+        if (vectorScore >= 0.85) score += 0.30;
+        else if (vectorScore >= 0.70) score += 0.20;
+        else if (vectorScore >= 0.50) score += 0.10;
+
+        // RRF 相对得分
+        double rrfRatio = maxRrfScore > 0 ? rrfScore / maxRrfScore : 0;
+        if (rrfRatio >= 0.8) score += 0.25;
+        else if (rrfRatio >= 0.5) score += 0.15;
+        else if (rrfRatio >= 0.3) score += 0.05;
+
+        // 排名位置加分
+        if (rank <= 2) score += 0.15;
+        else if (rank <= 5) score += 0.05;
+
+        return Math.min(1.0, score);
+    }
+
+    /**
+     * 生成检索结果的人类可读解释
+     */
+    static String generateExplanation(boolean dualHit, boolean vectorHit, boolean keywordHit, double vectorScore) {
+        if (dualHit) {
+            if (vectorScore >= 0.85) return "语义高度匹配，且精确包含关键词";
+            return "语义匹配，且包含关键词";
+        }
+        if (vectorHit) {
+            if (vectorScore >= 0.85) return "语义高度匹配（相似度 " + String.format("%.0f%%", vectorScore * 100) + "）";
+            if (vectorScore >= 0.70) return "语义相关（相似度 " + String.format("%.0f%%", vectorScore * 100) + "）";
+            return "语义弱相关（相似度 " + String.format("%.0f%%", vectorScore * 100) + "）";
+        }
+        if (keywordHit) return "仅关键词匹配";
+        return "检索结果";
+    }
+
+    /**
+     * Find the text content of a parent section by source and parentBreadcrumb
+     */
+    private String findParentContext(String source, String parentBreadcrumb) {
+        for (Map.Entry<String, String> entry : segmentSourceMap.entrySet()) {
+            if (!entry.getValue().equals(source)) continue;
+            String segId = entry.getKey();
+            // Check if this segment's breadcrumb matches parentBreadcrumb
+            String text = segmentTextMap.get(segId);
+            if (text != null && text.contains(parentBreadcrumb)) {
+                return text.length() > 200 ? text.substring(0, 200) + "..." : text;
+            }
+        }
+        return "";
     }
 
     /**
@@ -262,5 +357,14 @@ public class HybridSearcher {
     public record KeywordMatch(String segmentId, double bm25Score) {}
 
     public record SearchResult(String segmentId, double rrfScore,
-                        String text, String source, double vectorScore) {}
+                        String text, String source, double vectorScore,
+                        String breadcrumb, String parentContext,
+                        double confidence, String explanation) {
+
+        public String confidenceLabel() {
+            if (confidence >= 0.70) return "HIGH";
+            if (confidence >= 0.40) return "MEDIUM";
+            return "LOW";
+        }
+    }
 }

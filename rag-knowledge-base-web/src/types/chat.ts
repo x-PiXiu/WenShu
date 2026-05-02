@@ -10,6 +10,10 @@ export interface ChatMessage {
   thinking?: string
   isThinking?: boolean
   thinkingExpanded?: boolean
+  // Retrieval status feedback
+  status?: { phase: string; message: string; segments?: number }
+  // Retrieved article count during streaming (before detailed sources are shown)
+  sourceCount?: number
 }
 
 export interface SourceInfo {
@@ -18,6 +22,10 @@ export interface SourceInfo {
   source: string
   rrfScore: number
   vectorScore: number
+  breadcrumb?: string
+  confidence: number
+  confidenceLabel: string
+  explanation: string
 }
 
 export interface RagAnswer {
@@ -101,6 +109,45 @@ export interface AppSettings {
   rag: RagConfig
   a2a: A2AAppConfig
   documentTypes?: DocumentTypeConfig[]
+}
+
+// Memory Types
+export interface MemoryEntry {
+  id: string
+  conversationId: string
+  summary: string
+  importance: number
+  accessCount: number
+  createdAt: number
+  lastAccessedAt: number
+  decayedImportance: number
+}
+
+// Eval Types
+export interface EvalTestCase {
+  id: string
+  question: string
+  relevantSources: string[]
+  category: string
+}
+
+export interface EvalResult {
+  timestamp: string
+  totalCases: number
+  topK: number
+  hitRate: number
+  avgRecallAtK: number
+  avgPrecisionAtK: number
+  mrr: number
+  caseResults: EvalCaseSummary[]
+}
+
+export interface EvalCaseSummary {
+  id: string
+  question: string
+  category: string
+  hit: boolean
+  topScore: number
 }
 
 export interface KnowledgeStats {

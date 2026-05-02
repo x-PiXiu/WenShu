@@ -9,6 +9,7 @@ const conversations = ref<Conversation[]>([])
 const currentConversationId = ref<string | null>(null)
 const streamingEnabled = ref(true)
 let streamGeneration = 0
+let activeAbortController: AbortController | null = null
 
 const { currentAgent } = useAgents()
 
@@ -173,6 +174,9 @@ export function useChat() {
   // ===== SSE Streaming =====
 
   async function sendQuestionStream(question: string, assistantMsg: ChatMessage, gen: number): Promise<void> {
+    const ctrl = new AbortController()
+    activeAbortController = ctrl
+
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -181,6 +185,7 @@ export function useChat() {
         conversationId: currentConversationId.value || undefined,
         agentId: currentAgent.value?.id || undefined,
       }),
+      signal: ctrl.signal,
     })
 
     if (!res.ok) {
@@ -213,14 +218,21 @@ export function useChat() {
           if (meta.conversationId && !currentConversationId.value) {
             currentConversationId.value = meta.conversationId
           }
+        } else if (eventType === 'status') {
+          const status = JSON.parse(eventData)
+          assistantMsg.status = { phase: status.phase, message: status.message, segments: status.segments }
         } else if (eventType === 'sources') {
-          assistantMsg.sources = JSON.parse(eventData) as SourceInfo[]
+          const sources = JSON.parse(eventData) as SourceInfo[]
+          // Always save sources data (fallback if done event is missed)
+          assistantMsg.sources = sources
+          assistantMsg.sourceCount = sources.length
           if (streamGeneration === gen) {
             loading.value = false
           }
         } else if (eventType === 'token') {
           const { t } = JSON.parse(eventData)
           fullText += t
+          assistantMsg.status = undefined
           updateThinkingState(assistantMsg, fullText)
         } else if (eventType === 'done') {
           const doneData = JSON.parse(eventData)
@@ -231,6 +243,8 @@ export function useChat() {
           }
           assistantMsg.loading = false
           assistantMsg.isThinking = false
+          assistantMsg.status = undefined
+          assistantMsg.sourceCount = undefined
           if (streamGeneration === gen) {
             loading.value = false
           }
@@ -282,6 +296,7 @@ export function useChat() {
       assistantMsg.loading = false
       assistantMsg.isThinking = false
     }
+    activeAbortController = null
   }
 
   /**
@@ -337,9 +352,36 @@ export function useChat() {
     currentConversationId.value = null
   }
 
+  async function stopGeneration() {
+    if (!loading.value) return
+    // Abort the fetch connection
+    if (activeAbortController) {
+      activeAbortController.abort()
+      activeAbortController = null
+    }
+    // Notify server to stop streaming
+    if (currentConversationId.value) {
+      try {
+        await fetch('/api/chat/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: currentConversationId.value }),
+        })
+      } catch { /* ignore */ }
+    }
+    // Mark the last assistant message as done
+    const lastMsg = messages.value[messages.value.length - 1]
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.loading) {
+      lastMsg.loading = false
+      lastMsg.isThinking = false
+      lastMsg.content = lastMsg.content || lastMsg.thinking || '(已停止生成)'
+    }
+    loading.value = false
+  }
+
   return {
     messages, loading, conversations, currentConversationId, streamingEnabled,
-    sendQuestion, clearMessages,
+    sendQuestion, stopGeneration, clearMessages,
     loadConversations, loadStreamingConfig, createConversation, switchConversation, deleteConversation,
   }
 }

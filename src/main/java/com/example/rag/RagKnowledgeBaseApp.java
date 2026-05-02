@@ -10,7 +10,7 @@ import dev.langchain4j.data.document.DocumentSplitter;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
@@ -40,7 +40,7 @@ public class RagKnowledgeBaseApp {
         String minimaxBaseUrl = "https://api.minimax.chat/v1";
         String zhipuBaseUrl = "https://open.bigmodel.cn/api/paas/v4";
 
-        ChatLanguageModel chatModel = OpenAiChatModel.builder()
+        ChatModel chatModel = OpenAiChatModel.builder()
                 .apiKey(miniMaxApiKey).baseUrl(minimaxBaseUrl).modelName("MiniMax-M2.5").build();
 
         EmbeddingModel embeddingModel = OpenAiEmbeddingModel.builder()
@@ -100,7 +100,7 @@ public class RagKnowledgeBaseApp {
                 String prompt = RagPromptTemplate.build(question, refs);
 
                 // Step C: 生成回答
-                String answer = chatModel.generate(prompt);
+                String answer = chatModel.chat(prompt);
 
                 // Step D: 输出结果
                 System.out.println("\n回答：");

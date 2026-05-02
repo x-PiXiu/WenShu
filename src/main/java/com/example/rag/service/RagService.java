@@ -5,6 +5,8 @@ import com.example.rag.config.ModelFactory;
 import com.example.rag.config.VectorStoreFactory;
 import com.example.rag.parser.AutoDocumentParser;
 import com.example.rag.parser.DocumentMetaStore;
+import com.example.rag.parser.DocumentTypeDetector;
+import com.example.rag.parser.SemanticSplitter;
 import com.example.rag.prompt.RagPromptTemplate;
 import com.example.rag.prompt.RagPromptTemplate.Reference;
 import com.example.rag.search.HybridSearcher;
@@ -19,11 +21,11 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.output.Response;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.embedding.EmbeddingModel;
-import dev.langchain4j.model.StreamingResponseHandler;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 
 import java.nio.file.Path;
@@ -39,8 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class RagService {
 
-    private volatile ChatLanguageModel chatModel;
-    private volatile StreamingChatLanguageModel streamingChatModel;
+    private volatile ChatModel chatModel;
+    private volatile StreamingChatModel streamingChatModel;
     private volatile EmbeddingModel embeddingModel;
     private volatile EmbeddingStore<TextSegment> store;
     private volatile HybridSearcher searcher;
@@ -51,6 +53,7 @@ public class RagService {
 
     private final AppConfiguration config;
     private final DocumentMetaStore metaStore;
+    private volatile MemoryStore memoryStore;
     private int documentCount = 0;
     private int segmentCount = 0;
 
@@ -58,6 +61,10 @@ public class RagService {
         this.config = config;
         this.metaStore = new DocumentMetaStore("knowledge");
         rebuildModels();
+    }
+
+    public void setMemoryStore(MemoryStore memoryStore) {
+        this.memoryStore = memoryStore;
     }
 
     /**
@@ -95,8 +102,7 @@ public class RagService {
         List<TextSegment> allSegments = new ArrayList<>();
         for (Document doc : docs) {
             String source = doc.metadata().getString("source");
-            String typeName = metaStore.getTypeName(source);
-            DocumentSplitter typeSplitter = createSplitter(typeName);
+            DocumentSplitter typeSplitter = createSplitterForReindex(source, doc.text());
             allSegments.addAll(typeSplitter.split(doc));
         }
         int totalSegments = allSegments.size();
@@ -162,18 +168,11 @@ public class RagService {
                 .toList();
 
         String prompt = RagPromptTemplate.build(question, refs);
-        String answer = stripThinkTags(chatModel.generate(prompt));
+        String answer = stripThinkTags(chatModel.chat(prompt));
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
-            SearchResult r = results.get(i);
-            sources.add(new SourceInfo(
-                    i + 1,
-                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
-                    r.source(),
-                    r.rrfScore(),
-                    r.vectorScore()
-            ));
+            sources.add(toSourceInfo(i + 1, results.get(i)));
         }
 
         return new RagAnswer(answer, sources, refs.stream()
@@ -206,7 +205,7 @@ public class RagService {
                 .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
                 .toList();
 
-        String systemContent = RagPromptTemplate.buildSystemContext(agentPrompt, refs);
+        String systemContent = buildContextWithMemories(question, agentPrompt, refs);
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(systemContent));
@@ -223,22 +222,15 @@ public class RagService {
 
         messages.add(UserMessage.from(question));
 
-        Response<AiMessage> response = chatModel.generate(messages);
-        String answer = stripThinkTags(response.content().text());
+        ChatResponse chatResponse = chatModel.chat(messages);
+        String answer = stripThinkTags(chatResponse.aiMessage().text());
         if (answer == null) {
             answer = "未能生成回答。";
         }
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
-            SearchResult r = results.get(i);
-            sources.add(new SourceInfo(
-                    i + 1,
-                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
-                    r.source(),
-                    r.rrfScore(),
-                    r.vectorScore()
-            ));
+            sources.add(toSourceInfo(i + 1, results.get(i)));
         }
 
         return new RagAnswer(answer, sources, refs.stream()
@@ -263,7 +255,7 @@ public class RagService {
                 .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
                 .toList();
 
-        String systemContent = RagPromptTemplate.buildSystemContext(agentPrompt, refs);
+        String systemContent = buildContextWithMemories(question, agentPrompt, refs);
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(systemContent));
@@ -282,14 +274,7 @@ public class RagService {
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
-            SearchResult r = results.get(i);
-            sources.add(new SourceInfo(
-                    i + 1,
-                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
-                    r.source(),
-                    r.rrfScore(),
-                    r.vectorScore()
-            ));
+            sources.add(toSourceInfo(i + 1, results.get(i)));
         }
 
         return new StreamContext(messages, sources);
@@ -298,8 +283,8 @@ public class RagService {
     /**
      * 流式生成：将消息列表发送给 StreamingChatModel，通过回调逐 token 输出
      */
-    public void streamGenerate(List<ChatMessage> messages, StreamingResponseHandler<AiMessage> handler) {
-        streamingChatModel.generate(messages, handler);
+    public void streamGenerate(List<ChatMessage> messages, StreamingChatResponseHandler handler) {
+        streamingChatModel.chat(messages, handler);
     }
 
     /**
@@ -318,21 +303,61 @@ public class RagService {
                 prompt.append("助手: ").append(content).append("\n");
             }
         }
-        return stripThinkTags(chatModel.generate(prompt.toString()));
+        return stripThinkTags(chatModel.chat(prompt.toString()));
     }
 
     /**
      * 将摘要向量化存储到知识库，作为长期记忆
      * 后续 RAG 检索时会自动检索到这些记忆片段
      */
-    public void storeMemory(String conversationId, String summary) {
+    public void storeMemory(String conversationId, String summary, List<HistoryEntry> history) {
+        // Score importance
+        List<MemoryStore.MemoryEntry> existing = memoryStore != null
+                ? memoryStore.listByConversation(conversationId) : List.of();
+        double importance = MemoryScorer.score(summary, history, existing);
+
+        // Persist to SQLite
+        if (memoryStore != null) {
+            memoryStore.storeMemory(conversationId, summary, importance);
+        }
+
+        // Store in vector store for semantic retrieval
         Metadata meta = new Metadata();
-        meta.add("source", "memory:" + conversationId);
-        meta.add("type", "memory");
+        meta.put("source", "memory:" + conversationId);
+        meta.put("type", "memory");
+        meta.put("importance", importance);
         TextSegment segment = TextSegment.from("[记忆摘要] " + summary, meta);
         Embedding embedding = embeddingModel.embed(segment.text()).content();
         String id = store.add(embedding, segment);
         searcher.indexSegment(id, segment.text(), "memory:" + conversationId);
+    }
+
+    /**
+     * Recall relevant memories for a given query
+     */
+    public List<String> recallMemories(String query, int limit) {
+        if (memoryStore == null || memoryStore.getMemoryCount() == 0) return List.of();
+        try {
+            Embedding queryEmb = embeddingModel.embed(query).content();
+            dev.langchain4j.store.embedding.EmbeddingSearchRequest request =
+                    dev.langchain4j.store.embedding.EmbeddingSearchRequest.builder()
+                            .queryEmbedding(queryEmb)
+                            .maxResults(limit * 2)
+                            .minScore(0.3)
+                            .build();
+            var results = store.search(request).matches();
+            List<String> memories = new ArrayList<>();
+            for (var hit : results) {
+                String source = hit.embedded().metadata().getString("source");
+                if (source != null && source.startsWith("memory:")) {
+                    memories.add(hit.embedded().text());
+                    if (memories.size() >= limit) break;
+                }
+            }
+            return memories;
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     /**
@@ -364,8 +389,82 @@ public class RagService {
      * 根据文档类型名创建对应的 Splitter（从配置读取分块参数）
      */
     private DocumentSplitter createSplitter(String typeName) {
+        return createSplitter(typeName, null);
+    }
+
+    /**
+     * 根据文档类型名创建对应的 Splitter，可传入 StructureProfile 做动态调整
+     */
+    private DocumentSplitter createSplitter(String typeName,
+                                            DocumentTypeDetector.StructureProfile profile) {
         AppConfiguration.DocumentTypeConfig cfg = config.findDocTypeConfig(typeName);
-        return DocumentSplitters.recursive(cfg.chunkSize, cfg.chunkOverlap);
+        return new SemanticSplitter(cfg.chunkSize, cfg.overlapSentences, profile);
+    }
+
+    /**
+     * 重索引时创建 Splitter：根据用户原始选择决定策略
+     * - 自动检测上传的文档 → 重新运行检测，获取 StructureProfile
+     * - 手动指定类型的文档 → 使用存储的类型，不传 profile
+     * - 无元数据的文档 → 自动检测
+     */
+    private DocumentSplitter createSplitterForReindex(String filename, String content) {
+        DocumentMetaStore.DocMeta docMeta = metaStore.get(filename);
+
+        if (docMeta == null) {
+            // 无元数据：自动检测
+            DocumentTypeDetector.DetailedDetection detailed = DocumentTypeDetector.detectDetailed(filename, content);
+            return createSplitter(detailed.result().type(), detailed.profile());
+        }
+
+        if ("structure".equals(docMeta.detectionMethod())) {
+            // 原先是自动检测 → 重跑检测获取最新 profile
+            DocumentTypeDetector.DetailedDetection detailed = DocumentTypeDetector.detectDetailed(filename, content);
+            return createSplitter(detailed.result().type(), detailed.profile());
+        }
+
+        // 手动指定类型 → 保持用户选择，不传 profile
+        return createSplitter(docMeta.type());
+    }
+
+    /**
+     * 自动检测文档类型并索引
+     * @param file 文件路径
+     * @return 检测到的文档类型
+     */
+    public synchronized String autoDetectAndIndex(java.nio.file.Path file) {
+        Document doc = AutoDocumentParser.load(file);
+
+        // 自动检测文档类型（同时获取结构分析详情）
+        String filename = file.getFileName().toString();
+        String docText = doc.text();
+        DocumentTypeDetector.DetailedDetection detailed = DocumentTypeDetector.detectDetailed(filename, docText);
+        DocumentTypeDetector.DetectionResult detection = detailed.result();
+        String detectedType = detection.type();
+
+        System.out.println("[AUTO-DETECT] " + filename + " → " + detectedType
+                + " (confidence: " + String.format("%.2f", detection.confidence())
+                + ", method: " + detection.method()
+                + ", codeRatio: " + String.format("%.1f%%", detailed.profile().codeRatio() * 100)
+                + ")");
+
+        // 使用检测到的类型 + 结构分析进行分块和索引
+        DocumentSplitter typeSplitter = createSplitter(detectedType, detailed.profile());
+        List<TextSegment> segments = typeSplitter.split(doc);
+
+        for (TextSegment segment : segments) {
+            Embedding embedding = embeddingModel.embed(segment.text()).content();
+            String id = store.add(embedding, segment);
+            String source = segment.metadata().getString("source");
+            searcher.indexSegment(id, segment.text(), source != null ? source : "unknown");
+            segmentCount++;
+        }
+        documentCount++;
+
+        // 持久化元数据（记录检测来源）
+        AppConfiguration.DocumentTypeConfig cfg = config.findDocTypeConfig(detectedType);
+        metaStore.put(filename, detectedType, cfg.chunkSize, cfg.chunkOverlap, detection.method());
+
+        return detectedType;
     }
 
     /**
@@ -392,25 +491,35 @@ public class RagService {
         AppConfiguration.RagConfig rag = config.getRag();
         this.searcher = new HybridSearcher(store, embeddingModel,
                 rag.vectorTopK, rag.keywordTopK, rag.rrfK, rag.minScore);
+
+        // Re-index remaining documents
+        indexKnowledgeBase(knowledgeDir);
     }
 
     // ===== Blog Article Indexing =====
 
     /**
-     * 索引博客文章到向量库（自动分块）
+     * 索引博客文章到向量库（自动检测类型 + 自适应分块）
      */
     public synchronized void indexBlogArticle(String articleId, String slug, String title, String content, String category) {
         String source = "blog:" + slug;
         Metadata baseMeta = new Metadata();
-        baseMeta.add("source", source);
-        baseMeta.add("type", "blog");
-        baseMeta.add("articleId", articleId);
-        baseMeta.add("title", title);
-        baseMeta.add("category", category != null ? category : "");
+        baseMeta.put("source", source);
+        baseMeta.put("type", "blog");
+        baseMeta.put("articleId", articleId);
+        baseMeta.put("title", title);
+        baseMeta.put("category", category != null ? category : "");
 
-        // Split article into chunks to avoid exceeding embedding model token limit
-        DocumentSplitter articleSplitter = createSplitter("ARTICLE");
-        Document doc = new Document(title + "\n\n" + content, baseMeta);
+        // Auto-detect article structure for optimal chunking
+        String fullText = title + "\n\n" + content;
+        DocumentTypeDetector.DetailedDetection detailed = DocumentTypeDetector.detectDetailed(slug, fullText);
+        String detectedType = detailed.result().type();
+        DocumentSplitter articleSplitter = createSplitter(detectedType, detailed.profile());
+
+        System.out.println("[BLOG-INDEX] " + slug + " → " + detectedType
+                + " (codeRatio: " + String.format("%.1f%%", detailed.profile().codeRatio() * 100) + ")");
+
+        Document doc = Document.from(fullText, baseMeta);
         List<TextSegment> segments = articleSplitter.split(doc);
 
         int indexed = 0;
@@ -463,8 +572,8 @@ public class RagService {
         }
         messages.add(UserMessage.from(question));
 
-        Response<AiMessage> response = chatModel.generate(messages);
-        String answer = stripThinkTags(response.content().text());
+        ChatResponse chatResponse = chatModel.chat(messages);
+        String answer = stripThinkTags(chatResponse.aiMessage().text());
         if (answer == null) answer = "未能生成回答。";
 
         return new RagAnswer(answer, List.of(), List.of());
@@ -536,16 +645,13 @@ public class RagService {
         }
         messages.add(UserMessage.from(question));
 
-        Response<AiMessage> response = chatModel.generate(messages);
-        String answer = stripThinkTags(response.content().text());
+        ChatResponse chatResponse = chatModel.chat(messages);
+        String answer = stripThinkTags(chatResponse.aiMessage().text());
         if (answer == null) answer = "未能生成回答。";
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
-            SearchResult r = results.get(i);
-            sources.add(new SourceInfo(i + 1,
-                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
-                    r.source(), r.rrfScore(), r.vectorScore()));
+            sources.add(toSourceInfo(i + 1, results.get(i)));
         }
 
         return new RagAnswer(answer, sources, refs.stream()
@@ -589,10 +695,7 @@ public class RagService {
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
-            SearchResult r = results.get(i);
-            sources.add(new SourceInfo(i + 1,
-                    r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text(),
-                    r.source(), r.rrfScore(), r.vectorScore()));
+            sources.add(toSourceInfo(i + 1, results.get(i)));
         }
 
         return new StreamContext(messages, sources);
@@ -609,6 +712,23 @@ public class RagService {
         return text.replaceAll("(?s)<think\\s*>.*?</\\s*think\\s*>", "").trim();
     }
 
+    private String buildContextWithMemories(String question, String agentPrompt, List<Reference> refs) {
+        String base = RagPromptTemplate.buildSystemContext(agentPrompt, refs);
+
+        if (memoryStore == null || memoryStore.getMemoryCount() == 0) return base;
+
+        List<String> recalled = recallMemories(question, 3);
+        if (recalled.isEmpty()) return base;
+
+        StringBuilder sb = new StringBuilder(base);
+        sb.append("\n\n【历史记忆】\n");
+        for (String mem : recalled) {
+            String clean = mem.startsWith("[记忆摘要] ") ? mem.substring("[记忆摘要] ".length()) : mem;
+            sb.append("- ").append(clean).append("\n");
+        }
+        return sb.toString();
+    }
+
     // ===== Stats =====
 
     public KnowledgeStats getStats() {
@@ -618,10 +738,21 @@ public class RagService {
                 config.getVectorStore().type);
     }
 
+    public HybridSearcher getSearcher() {
+        return searcher;
+    }
+
     // ===== Records =====
 
+    private static SourceInfo toSourceInfo(int index, SearchResult r) {
+        String truncated = r.text().length() > 120 ? r.text().substring(0, 120) + "..." : r.text();
+        return new SourceInfo(index, truncated, r.source(), r.rrfScore(), r.vectorScore(),
+                r.breadcrumb(), r.confidence(), r.confidenceLabel(), r.explanation());
+    }
+
     public record RagAnswer(String answer, List<SourceInfo> sources, List<String> references) {}
-    public record SourceInfo(int index, String text, String source, double rrfScore, double vectorScore) {}
+    public record SourceInfo(int index, String text, String source, double rrfScore, double vectorScore,
+                             String breadcrumb, double confidence, String confidenceLabel, String explanation) {}
     public record HistoryEntry(String role, String content) {}
     public record StreamContext(List<ChatMessage> messages, List<SourceInfo> sources) {}
     public record KnowledgeStats(int documentCount, int segmentCount,

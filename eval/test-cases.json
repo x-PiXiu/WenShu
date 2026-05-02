@@ -1,0 +1,62 @@
+[
+  {
+    "id": "tc-001",
+    "question": "LangChain4j 是什么",
+    "relevantSources": ["XH-001-Java也能做AI应用？.md", "XH-002-Spring-AI-vs-LangChain4j怎么选.md"],
+    "category": "概念理解"
+  },
+  {
+    "id": "tc-002",
+    "question": "LangChain4j 和 Spring AI 怎么选",
+    "relevantSources": ["XH-002-Spring-AI-vs-LangChain4j怎么选.md"],
+    "category": "技术对比"
+  },
+  {
+    "id": "tc-003",
+    "question": "怎么跑通第一个AI对话",
+    "relevantSources": ["XH-003-5分钟跑通第一个AI对话.md"],
+    "category": "操作指南"
+  },
+  {
+    "id": "tc-004",
+    "question": "Maven 依赖怎么配置",
+    "relevantSources": ["XH-003-5分钟跑通第一个AI对话.md"],
+    "category": "操作指南"
+  },
+  {
+    "id": "tc-005",
+    "question": "MiniMax API Key 怎么申请",
+    "relevantSources": ["XH-003-5分钟跑通第一个AI对话.md"],
+    "category": "操作指南"
+  },
+  {
+    "id": "tc-006",
+    "question": "报错 api key invalid 怎么办",
+    "relevantSources": ["XH-003-5分钟跑通第一个AI对话.md"],
+    "category": "排错"
+  },
+  {
+    "id": "tc-007",
+    "question": "A2A 协议是什么",
+    "relevantSources": ["A2A协议详解与Multi-Agent架构文档.md"],
+    "category": "概念理解"
+  },
+  {
+    "id": "tc-008",
+    "question": "Java 还能做 AI 应用吗",
+    "relevantSources": ["第1篇-开篇：AI应用时代，Java还能打吗？.docx"],
+    "category": "概念理解"
+  },
+  {
+    "id": "tc-009",
+    "question": "向量数据库怎么选",
+    "relevantSources": ["XH-001-Java也能做AI应用？.md", "XH-002-Spring-AI-vs-LangChain4j怎么选.md"],
+    "category": "技术对比"
+  },
+  {
+    "id": "tc-010",
+    "question": "Multi-Agent 架构怎么设计",
+    "relevantSources": ["A2A协议详解与Multi-Agent架构文档.md"],
+    "category": "深度分析"
+  }
+]

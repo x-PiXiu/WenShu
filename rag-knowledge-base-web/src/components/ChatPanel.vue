@@ -67,8 +67,9 @@
           <span>{{ msg.role === 'user' ? 'U' : 'AI' }}</span>
         </div>
         <div :class="['msg-bubble', msg.role]">
-          <div v-if="msg.loading && !msg.thinking" class="typing">
-            <span></span><span></span><span></span>
+          <div v-if="msg.loading && !msg.thinking && !msg.content" class="typing">
+            <span v-if="msg.status" class="retrieval-status">{{ msg.status.message }}</span>
+            <span v-else class="typing-dots"><span></span><span></span><span></span></span>
           </div>
           <template v-else>
             <!-- Thinking block -->
@@ -106,15 +107,29 @@
               <MarkdownRenderer :content="msg.content" />
             </div>
           </template>
-          <div v-if="msg.sources && msg.sources.length > 0" class="sources">
+          <!-- Streaming: lightweight retrieval count -->
+          <div v-if="msg.loading && msg.sourceCount" class="retrieval-hint">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>检索到 {{ msg.sourceCount }} 篇文章</span>
+          </div>
+          <!-- Completed: detailed expandable sources -->
+          <div v-if="!msg.loading && msg.sources && msg.sources.length > 0" class="sources">
             <n-collapse>
               <n-collapse-item title="参考来源" name="sources">
                 <div v-for="s in msg.sources" :key="s.index" class="source-item">
                   <div class="source-header">
                     <n-tag size="small" round :bordered="false" type="warning">{{ s.index }}</n-tag>
                     <span class="source-name">{{ s.source }}</span>
+                    <n-tag
+                      size="small"
+                      :type="s.confidenceLabel === 'HIGH' ? 'success' : s.confidenceLabel === 'MEDIUM' ? 'warning' : 'default'"
+                      :bordered="false"
+                      round
+                    >{{ s.confidenceLabel }}</n-tag>
                     <span class="source-scores">RRF {{ s.rrfScore.toFixed(3) }} &middot; Vec {{ s.vectorScore.toFixed(3) }}</span>
                   </div>
+                  <div v-if="s.explanation" class="source-explanation">{{ s.explanation }}</div>
+                  <div v-if="s.breadcrumb" class="source-breadcrumb">{{ s.breadcrumb }}</div>
                   <div class="source-text">{{ s.text }}</div>
                 </div>
               </n-collapse-item>
@@ -134,6 +149,9 @@
           @keydown.enter.exact.prevent="handleSend"
           @input="autoResize"
         />
+        <button v-if="loading" class="stop-btn" @click="stopGeneration" title="停止生成">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+        </button>
         <button class="send-btn" :disabled="!inputText.trim() || loading" @click="handleSend">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
         </button>
@@ -154,7 +172,7 @@ const inputText = ref('')
 const messagesRef = ref<HTMLElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
 
-const { messages, loading, sendQuestion } = useChat()
+const { messages, loading, sendQuestion, stopGeneration } = useChat()
 const { agents, currentAgent, loadAgents, selectAgent, createAgent, updateAgent, deleteAgent } = useAgents()
 
 // Agent form state
@@ -432,6 +450,7 @@ watch(messages, () => {
   min-width: 0;
 }
 .source-item:last-child { border-bottom: none; }
+.source-explanation { color: #8B7355; font-size: 11px; margin-bottom: 4px; }
 .source-header {
   display: flex;
   align-items: center;
@@ -453,6 +472,12 @@ watch(messages, () => {
   white-space: nowrap;
   flex-shrink: 0;
 }
+.source-breadcrumb {
+  font-size: 11px;
+  color: #A89888;
+  padding: 2px 0;
+  letter-spacing: 0.3px;
+}
 .source-text {
   color: #6B5E52;
   font-size: 12px;
@@ -464,14 +489,34 @@ watch(messages, () => {
   -webkit-box-orient: vertical;
   word-break: break-all;
 }
-.typing { display: flex; gap: 5px; padding: 6px 0; }
-.typing span {
+.typing { display: flex; gap: 5px; padding: 6px 0; align-items: center; }
+.typing-dots span {
   width: 8px; height: 8px; border-radius: 50%;
   background: #D4C8BA;
   animation: bounce 1.4s infinite both;
 }
-.typing span:nth-child(2) { animation-delay: 0.2s; }
-.typing span:nth-child(3) { animation-delay: 0.4s; }
+.typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+.retrieval-status {
+  color: #8B7E74;
+  font-size: 13px;
+  animation: pulse-opacity 1.5s ease-in-out infinite;
+}
+.retrieval-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: #FAF7F2;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #8B7E74;
+}
+@keyframes pulse-opacity {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
 @keyframes bounce {
   0%, 80%, 100% { opacity: 0.3; transform: scale(0.9); }
   40% { opacity: 1; transform: scale(1.1); }
@@ -498,6 +543,13 @@ textarea {
   max-height: 120px;
 }
 textarea::placeholder { color: #B8A898; }
+.stop-btn {
+  width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+  background: #E74C3C; color: #fff; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: all 0.2s;
+}
+.stop-btn:hover { transform: scale(1.05); background: #C0392B; }
+
 .send-btn {
   width: 36px; height: 36px; border-radius: 10px;
   border: none; cursor: pointer;

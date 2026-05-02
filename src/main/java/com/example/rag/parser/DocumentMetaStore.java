@@ -1,5 +1,7 @@
 package com.example.rag.parser;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -31,7 +33,15 @@ public class DocumentMetaStore {
      * 记录一个文档的类型名和分块参数
      */
     public void put(String filename, String typeName, int chunkSize, int chunkOverlap) {
-        meta.put(filename, new DocMeta(typeName, chunkSize, chunkOverlap));
+        meta.put(filename, new DocMeta(typeName, chunkSize, chunkOverlap, "manual"));
+        save();
+    }
+
+    /**
+     * 记录一个文档的类型名、分块参数和检测来源
+     */
+    public void put(String filename, String typeName, int chunkSize, int chunkOverlap, String detectionMethod) {
+        meta.put(filename, new DocMeta(typeName, chunkSize, chunkOverlap, detectionMethod != null ? detectionMethod : "manual"));
         save();
     }
 
@@ -41,6 +51,13 @@ public class DocumentMetaStore {
     public String getTypeName(String filename) {
         DocMeta m = meta.get(filename);
         return m != null ? m.type : "GENERAL";
+    }
+
+    /**
+     * 获取文档完整元数据，未记录则返回 null
+     */
+    public DocMeta get(String filename) {
+        return meta.get(filename);
     }
 
     /**
@@ -77,5 +94,24 @@ public class DocumentMetaStore {
         }
     }
 
-    public record DocMeta(String type, int chunkSize, int chunkOverlap) {}
+    public record DocMeta(String type, int chunkSize, int chunkOverlap, String detectionMethod) {
+        @JsonCreator
+        public DocMeta(
+                @JsonProperty("type") String type,
+                @JsonProperty("chunkSize") int chunkSize,
+                @JsonProperty("chunkOverlap") int chunkOverlap,
+                @JsonProperty(value = "detectionMethod", defaultValue = "manual") String detectionMethod) {
+            this.type = type;
+            this.chunkSize = chunkSize;
+            this.chunkOverlap = chunkOverlap;
+            this.detectionMethod = detectionMethod != null ? detectionMethod : "manual";
+        }
+
+        /**
+         * 兼容旧格式的构造：detectionMethod 默认为 "manual"
+         */
+        public DocMeta(String type, int chunkSize, int chunkOverlap) {
+            this(type, chunkSize, chunkOverlap, "manual");
+        }
+    }
 }

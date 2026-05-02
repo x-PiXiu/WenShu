@@ -118,6 +118,15 @@ public class BlogStore {
                 )
             """);
 
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS blog_index_hash (
+                    slug TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    segment_count INTEGER NOT NULL DEFAULT 0,
+                    indexed_at INTEGER NOT NULL
+                )
+            """);
+
         } catch (SQLException e) {
             throw new RuntimeException("Failed to init blog tables: " + e.getMessage(), e);
         }
@@ -496,4 +505,43 @@ public class BlogStore {
                            int sortOrder, long createdAt, long updatedAt) {}
 
     public record PageResult<T>(List<T> items, int total, int page, int size) {}
+
+    // ===== Incremental Index Hash Support =====
+
+    public String getIndexHash(String slug) {
+        try (var conn = getConnection();
+             var ps = conn.prepareStatement("SELECT content_hash FROM blog_index_hash WHERE slug = ?")) {
+            ps.setString(1, slug);
+            var rs = ps.executeQuery();
+            return rs.next() ? rs.getString("content_hash") : null;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
+    public void saveIndexHash(String slug, String contentHash, int segmentCount) {
+        try (var conn = getConnection();
+             var ps = conn.prepareStatement("""
+                 INSERT INTO blog_index_hash (slug, content_hash, segment_count, indexed_at)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(slug) DO UPDATE SET content_hash = excluded.content_hash,
+                     segment_count = excluded.segment_count, indexed_at = excluded.indexed_at
+             """)) {
+            ps.setString(1, slug);
+            ps.setString(2, contentHash);
+            ps.setInt(3, segmentCount);
+            ps.setLong(4, System.currentTimeMillis());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("[WARN] Failed to save index hash for " + slug + ": " + e.getMessage());
+        }
+    }
+
+    public void deleteIndexHash(String slug) {
+        try (var conn = getConnection();
+             var ps = conn.prepareStatement("DELETE FROM blog_index_hash WHERE slug = ?")) {
+            ps.setString(1, slug);
+            ps.executeUpdate();
+        } catch (SQLException ignored) {}
+    }
 }

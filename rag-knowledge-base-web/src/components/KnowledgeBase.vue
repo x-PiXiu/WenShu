@@ -13,6 +13,13 @@
           <span class="type-label">文档类型：</span>
           <div class="type-options">
             <button
+              :class="['type-btn type-btn-auto', { active: selectedType === 'AUTO' }]"
+              @click="selectedType = 'AUTO'"
+              title="自动检测文档类型并选择最优分块策略"
+            >
+              自动检测
+            </button>
+            <button
               v-for="t in documentTypes"
               :key="t.name"
               :class="['type-btn', { active: selectedType === t.name }]"
@@ -22,7 +29,8 @@
               {{ t.label }}
             </button>
           </div>
-          <span class="type-hint">分块: {{ currentTypePreview.chunkSize }} / 重叠: {{ currentTypePreview.chunkOverlap }}</span>
+          <span class="type-hint" v-if="selectedType !== 'AUTO'">分块: {{ currentTypePreview.chunkSize }} / 重叠: {{ currentTypePreview.chunkOverlap }}</span>
+          <span class="type-hint" v-else>智能识别文档类型，自动选择最优分块策略</span>
         </div>
 
         <div
@@ -104,6 +112,7 @@
               <div class="doc-name-row">
                 <span class="doc-name">{{ doc.name }}</span>
                 <span :class="['doc-type-badge', docTypeBadgeClass(doc.docType)]">{{ doc.docTypeLabel }}</span>
+                <span v-if="doc.detectionMethod === 'structure'" class="detect-auto" title="自动检测识别">AUTO</span>
               </div>
               <span class="doc-meta">{{ formatSize(doc.size) }} &middot; {{ formatDate(doc.lastModified) }} &middot; chunk={{ doc.chunkSize }}/{{ doc.chunkOverlap }}</span>
             </div>
@@ -136,6 +145,7 @@ interface DocumentInfo {
   docTypeLabel: string
   chunkSize: number
   chunkOverlap: number
+  detectionMethod: string
 }
 
 interface UploadResult {
@@ -151,10 +161,13 @@ const isDragging = ref(false)
 const uploadResult = ref<UploadResult | null>(null)
 const stats = ref<{ documentCount: number; segmentCount: number; embeddingModel: string } | null>(null)
 const fileInputRef = ref<HTMLInputElement>()
-const selectedType = ref('GENERAL')
+const selectedType = ref('AUTO')
 const documentTypes = ref<DocTypeInfo[]>([])
 
 const currentTypePreview = computed(() => {
+  if (selectedType.value === 'AUTO') {
+    return { name: 'AUTO', label: '自动检测', chunkSize: '-', chunkOverlap: '-' }
+  }
   return documentTypes.value.find(t => t.name === selectedType.value) || { name: 'GENERAL', label: '通用文档', chunkSize: 512, chunkOverlap: 50 }
 })
 
@@ -352,6 +365,16 @@ onMounted(() => {
   border-color: #D97B2B;
   color: #D97B2B;
 }
+.type-btn-auto {
+  border-style: dashed;
+  font-weight: 500;
+}
+.type-btn-auto.active {
+  border-style: solid;
+  background: linear-gradient(135deg, #E8F5E9, #F1F8E9);
+  border-color: #4CAF50;
+  color: #2E7D32;
+}
 .type-hint {
   font-size: 11px;
   color: #B8A898;
@@ -469,6 +492,16 @@ onMounted(() => {
 .badge-faq { background: #FFF3E0; color: #E65100; }
 .badge-log { background: #F3E5F5; color: #7B1FA2; }
 .badge-article { background: #E8F5E9; color: #2E7D32; }
+.detect-auto {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  background: #E8F5E9;
+  color: #4CAF50;
+  letter-spacing: 0.5px;
+}
 .doc-meta { font-size: 12px; color: #A89898; }
 .doc-delete {
   border: none; background: none; cursor: pointer;

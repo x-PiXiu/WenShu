@@ -88,14 +88,20 @@ public class AppConfiguration {
         public String label;
         public int chunkSize;
         public int chunkOverlap;
+        public int overlapSentences = 2;  // 句子级重叠数，默认 2
 
         public DocumentTypeConfig() {}
 
         public DocumentTypeConfig(String name, String label, int chunkSize, int chunkOverlap) {
+            this(name, label, chunkSize, chunkOverlap, 2);
+        }
+
+        public DocumentTypeConfig(String name, String label, int chunkSize, int chunkOverlap, int overlapSentences) {
             this.name = name;
             this.label = label;
             this.chunkSize = chunkSize;
             this.chunkOverlap = chunkOverlap;
+            this.overlapSentences = overlapSentences;
         }
     }
 
@@ -173,11 +179,11 @@ public LlmConfig getLlm() { return llm; }
 
     public static List<DocumentTypeConfig> createDefaultDocumentTypes() {
         List<DocumentTypeConfig> list = new ArrayList<>();
-        list.add(new DocumentTypeConfig("GENERAL", "通用文档", 512, 50));
-        list.add(new DocumentTypeConfig("TECHNICAL", "技术文档", 800, 100));
-        list.add(new DocumentTypeConfig("FAQ", "FAQ/问答对", 256, 20));
-        list.add(new DocumentTypeConfig("LOG", "日志/结构化数据", 512, 50));
-        list.add(new DocumentTypeConfig("ARTICLE", "长文/手册", 1024, 150));
+        list.add(new DocumentTypeConfig("GENERAL", "通用文档", 400, 50, 2));
+        list.add(new DocumentTypeConfig("TECHNICAL", "技术文档", 500, 80, 3));
+        list.add(new DocumentTypeConfig("FAQ", "FAQ/问答对", 256, 20, 1));
+        list.add(new DocumentTypeConfig("LOG", "日志/结构化数据", 400, 40, 2));
+        list.add(new DocumentTypeConfig("ARTICLE", "长文/手册", 600, 100, 3));
         return list;
     }
 }

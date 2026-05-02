@@ -158,6 +158,14 @@
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
                     媒体库
                   </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'memories' }]" @click="adminTab = 'memories'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 6 8 12 8 12s8-6 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3" fill="currentColor" opacity="0.3"/></svg>
+                    记忆管理
+                  </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'eval' }]" @click="adminTab = 'eval'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                    质量评估
+                  </button>
                   <div class="admin-tabs-spacer"></div>
                   <button class="admin-logout-btn" @click="handleLogout">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -189,6 +197,12 @@
                   <template v-if="adminTab === 'media'">
                     <MediaManager />
                   </template>
+                  <template v-if="adminTab === 'memories'">
+                    <MemoryManager />
+                  </template>
+                  <template v-if="adminTab === 'eval'">
+                    <EvalDashboard />
+                  </template>
                 </div>
               </div>
             </template>
@@ -217,6 +231,8 @@ import PostEditor from './components/admin/PostEditor.vue'
 import PostList from './components/admin/PostList.vue'
 import CategoryManager from './components/admin/CategoryManager.vue'
 import MediaManager from './components/admin/MediaManager.vue'
+import MemoryManager from './components/admin/MemoryManager.vue'
+import EvalDashboard from './components/admin/EvalDashboard.vue'
 import { useA2aClient } from './composables/useA2aClient'
 import { useSettings } from './composables/useSettings'
 import { useChat } from './composables/useChat'
