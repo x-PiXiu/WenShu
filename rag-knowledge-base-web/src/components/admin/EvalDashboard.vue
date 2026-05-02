@@ -96,7 +96,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import type { EvalTestCase, EvalResult } from '../../types/chat'
+import { useAdmin } from '../../composables/useAdmin'
 
+const { authHeaders } = useAdmin()
 const cases = ref<EvalTestCase[]>([])
 const results = ref<EvalResult[]>([])
 const trend = ref<{ hitRate: number; mrr: number }[]>([])
@@ -134,7 +136,7 @@ function scoreClass(val: number) {
 
 async function loadCases() {
   try {
-    const res = await fetch('/api/admin/eval/cases')
+    const res = await fetch('/api/admin/eval/cases', { headers: authHeaders() })
     if (res.ok) cases.value = await res.json()
   } catch { /* ignore */ }
 }
@@ -142,8 +144,8 @@ async function loadCases() {
 async function loadResults() {
   try {
     const [resResults, resTrend] = await Promise.all([
-      fetch('/api/admin/eval/results'),
-      fetch('/api/admin/eval/trend'),
+      fetch('/api/admin/eval/results', { headers: authHeaders() }),
+      fetch('/api/admin/eval/trend', { headers: authHeaders() }),
     ])
     if (resResults.ok) {
       results.value = await resResults.json()
@@ -159,7 +161,7 @@ async function runEval() {
   try {
     const res = await fetch('/api/admin/eval/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
     if (!res.ok) {
@@ -186,7 +188,7 @@ async function addCase() {
   try {
     await fetch('/api/admin/eval/cases', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify(tc),
     })
     newCase.value = { question: '', relevantSources: '', category: '' }
@@ -196,7 +198,7 @@ async function addCase() {
 
 async function deleteCase(id: string) {
   try {
-    await fetch(`/api/admin/eval/cases/${id}`, { method: 'DELETE' })
+    await fetch(`/api/admin/eval/cases/${id}`, { method: 'DELETE', headers: authHeaders() })
     cases.value = cases.value.filter(c => c.id !== id)
   } catch { /* ignore */ }
 }

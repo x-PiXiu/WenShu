@@ -67,6 +67,7 @@
           <span>{{ msg.role === 'user' ? 'U' : 'AI' }}</span>
         </div>
         <div :class="['msg-bubble', msg.role]">
+          <div class="msg-content-area">
           <div v-if="msg.loading && !msg.thinking && !msg.content" class="typing">
             <span v-if="msg.status" class="retrieval-status">{{ msg.status.message }}</span>
             <span v-else class="typing-dots"><span></span><span></span><span></span></span>
@@ -103,8 +104,9 @@
               <span></span><span></span><span></span>
             </div>
             <!-- Answer content -->
-            <div v-if="msg.content">
-              <MarkdownRenderer :content="msg.content" />
+            <div v-if="msg.content" :class="msg.role === 'user' ? 'user-text' : ''">
+              <MarkdownRenderer v-if="msg.role === 'assistant'" :content="msg.content" />
+              <template v-else>{{ msg.content }}</template>
             </div>
           </template>
           <!-- Streaming: lightweight retrieval count -->
@@ -135,6 +137,13 @@
               </n-collapse-item>
             </n-collapse>
           </div>
+          </div>
+          <div class="msg-actions" v-if="(msg.role === 'user' && msg.content) || (msg.role === 'assistant' && msg.content && !msg.loading)">
+            <button class="copy-btn" @click="copyMessage(msg)" :title="msg._copied ? '已复制' : '复制'">
+              <svg v-if="!msg._copied" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -144,7 +153,7 @@
         <textarea
           ref="textareaRef"
           v-model="inputText"
-          placeholder="输入您的问题..."
+          placeholder="输入您的问题... (Shift+Enter 换行)"
           rows="1"
           @keydown.enter.exact.prevent="handleSend"
           @input="autoResize"
@@ -232,6 +241,14 @@ async function handleSend() {
 
 function toggleThinking(msg: ChatMessage) {
   msg.thinkingExpanded = !msg.thinkingExpanded
+}
+
+function copyMessage(msg: ChatMessage) {
+  const text = msg.content || ''
+  navigator.clipboard.writeText(text).then(() => {
+    msg._copied = true
+    setTimeout(() => { msg._copied = false }, 1500)
+  }).catch(() => {})
 }
 
 function autoResize() {
@@ -561,4 +578,25 @@ textarea::placeholder { color: #B8A898; }
 }
 .send-btn:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 2px 8px rgba(217,123,43,0.3); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Message actions & copy button */
+.msg-bubble { position: relative; }
+.msg-content-area { min-width: 0; }
+.msg-actions {
+  display: flex; justify-content: flex-end;
+  padding: 2px 4px 0; opacity: 0; transition: opacity 0.15s;
+}
+.message-row:hover .msg-actions { opacity: 1; }
+.copy-btn {
+  background: none; border: none; cursor: pointer; padding: 3px 5px;
+  border-radius: 4px; color: #aaa; display: flex; align-items: center; gap: 3px;
+  font-size: 11px; transition: all 0.15s;
+}
+.copy-btn:hover { color: #555; background: #f0f0f0; }
+.copy-btn svg { flex-shrink: 0; }
+
+/* User message line breaks */
+.user-text {
+  white-space: pre-wrap; word-break: break-word; line-height: 1.6;
+}
 </style>

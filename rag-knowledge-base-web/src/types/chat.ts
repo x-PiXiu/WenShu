@@ -14,6 +14,8 @@ export interface ChatMessage {
   status?: { phase: string; message: string; segments?: number }
   // Retrieved article count during streaming (before detailed sources are shown)
   sourceCount?: number
+  // UI state
+  _copied?: boolean
 }
 
 export interface SourceInfo {
@@ -102,6 +104,13 @@ export interface DocumentTypeConfig {
   chunkOverlap: number
 }
 
+export interface WebSearchConfig {
+  provider: string
+  apiKey: string
+  baseUrl: string
+  maxResults: number
+}
+
 export interface AppSettings {
   llm: LlmConfig
   embedding: EmbeddingConfig
@@ -109,6 +118,7 @@ export interface AppSettings {
   rag: RagConfig
   a2a: A2AAppConfig
   documentTypes?: DocumentTypeConfig[]
+  webSearch?: WebSearchConfig
 }
 
 // Memory Types
@@ -148,6 +158,52 @@ export interface EvalCaseSummary {
   category: string
   hit: boolean
   topScore: number
+}
+
+// LLM Observability Types
+export interface LlmCall {
+  id: string
+  callType: string
+  model: string
+  inputTokens: number | null
+  outputTokens: number | null
+  durationMs: number | null
+  finishReason: string | null
+  error: string | null
+  createdAt: number
+}
+
+export interface LlmStats {
+  totalCalls: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  avgDurationMs: number
+}
+
+export interface LlmDailyStat {
+  dayStart: number
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  avgDurationMs: number
+}
+
+export interface LlmHourlyStat {
+  hour: number
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  avgDurationMs: number
+}
+
+export interface LlmTypeCount {
+  callType: string
+  count: number
+}
+
+export interface LlmLatencyBucket {
+  range: string
+  count: number
 }
 
 export interface KnowledgeStats {

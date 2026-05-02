@@ -166,6 +166,10 @@
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                     质量评估
                   </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'llm' }]" @click="adminTab = 'llm'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    LLM 监控
+                  </button>
                   <div class="admin-tabs-spacer"></div>
                   <button class="admin-logout-btn" @click="handleLogout">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -187,9 +191,7 @@
                     <AgentManager />
                   </template>
                   <template v-if="adminTab === 'settings'">
-                    <div class="settings-scroll-inner">
-                      <SettingsPage />
-                    </div>
+                    <SettingsPage />
                   </template>
                   <template v-if="adminTab === 'categories'">
                     <CategoryManager />
@@ -202,6 +204,9 @@
                   </template>
                   <template v-if="adminTab === 'eval'">
                     <EvalDashboard />
+                  </template>
+                  <template v-if="adminTab === 'llm'">
+                    <LlmMonitor />
                   </template>
                 </div>
               </div>
@@ -233,6 +238,7 @@ import CategoryManager from './components/admin/CategoryManager.vue'
 import MediaManager from './components/admin/MediaManager.vue'
 import MemoryManager from './components/admin/MemoryManager.vue'
 import EvalDashboard from './components/admin/EvalDashboard.vue'
+import LlmMonitor from './components/admin/LlmMonitor.vue'
 import { useA2aClient } from './composables/useA2aClient'
 import { useSettings } from './composables/useSettings'
 import { useChat } from './composables/useChat'
@@ -546,6 +552,5 @@ body {
   transition: all 0.2s;
 }
 .admin-logout-btn:hover { border-color: #E85D5D; color: #E85D5D; }
-.admin-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-.settings-scroll-inner { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.admin-content { flex: 1; overflow-y: auto; overflow-x: hidden; }
 </style>

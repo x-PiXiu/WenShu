@@ -257,6 +257,67 @@
         </div>
       </div>
 
+      <!-- Web Search Config -->
+      <div class="settings-card" style="margin-bottom: 16px">
+        <h3 class="card-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          互联网搜索
+          <span class="ws-status" :class="form.webSearch!.provider !== 'none' ? 'ws-on' : 'ws-off'">
+            {{ form.webSearch!.provider !== 'none' ? '已启用' : '未启用' }}
+          </span>
+        </h3>
+        <div class="ws-provider-grid">
+          <label v-for="opt in webSearchProviders" :key="opt.value"
+                 :class="['ws-provider-card', { active: form.webSearch!.provider === opt.value }]">
+            <input type="radio" v-model="form.webSearch!.provider" :value="opt.value" />
+            <div class="ws-provider-icon">{{ opt.icon }}</div>
+            <div class="ws-provider-info">
+              <div class="ws-provider-name">{{ opt.label }}</div>
+              <div class="ws-provider-desc">{{ opt.desc }}</div>
+            </div>
+          </label>
+        </div>
+
+        <transition name="slide-fade">
+          <div v-if="form.webSearch!.provider !== 'none'" class="ws-config-section">
+            <div class="ws-config-row">
+              <div class="ws-field">
+                <label class="ws-label">API Key</label>
+                <div class="ws-input-wrap">
+                  <svg class="ws-input-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  <input :type="showWsKey ? 'text' : 'password'"
+                         v-model="form.webSearch!.apiKey"
+                         class="ws-input"
+                         placeholder="输入 API Key" />
+                  <button class="ws-toggle-vis" @click="showWsKey = !showWsKey" :title="showWsKey ? '隐藏' : '显示'">
+                    <svg v-if="!showWsKey" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div v-if="form.webSearch!.provider === 'custom'" class="ws-field">
+                <label class="ws-label">API 地址</label>
+                <div class="ws-input-wrap">
+                  <svg class="ws-input-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  <input v-model="form.webSearch!.baseUrl" class="ws-input" placeholder="https://api.example.com/search?q={query}" />
+                </div>
+              </div>
+              <div class="ws-field ws-field-sm">
+                <label class="ws-label">最大结果数</label>
+                <div class="ws-input-wrap">
+                  <n-input-number v-model:value="form.webSearch!.maxResults" :min="1" :max="10" size="small" style="width: 100%" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </transition>
+
+        <div class="info-tip" style="margin: 12px 0 0">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#D97B2B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          当知识库无相关结果时，Agent 将自动使用互联网搜索补充信息。推荐 Tavily（专为 AI 优化）。
+        </div>
+      </div>
+
       <!-- Agent Persona Management -->
       <div class="settings-card" style="margin-bottom: 16px">
         <AgentManager />
@@ -302,6 +363,7 @@ const form = reactive<AppSettings>({
   vectorStore: { type: 'memory', chromaBaseUrl: 'http://localhost:8000', collectionName: 'rag_knowledge_base', milvusHost: 'localhost', milvusPort: 19530, embeddingDimension: 768 },
   rag: { chunkSize: 300, chunkOverlap: 30, vectorTopK: 5, keywordTopK: 10, rrfK: 60, minScore: 0.3 },
   a2a: { enabled: true, agentName: '文枢', agentDescription: '' },
+  webSearch: { provider: 'none', apiKey: '', baseUrl: '', maxResults: 5 },
   documentTypes: [
     { name: 'GENERAL', label: '通用文档', chunkSize: 512, chunkOverlap: 50 },
     { name: 'TECHNICAL', label: '技术文档', chunkSize: 800, chunkOverlap: 100 },
@@ -315,6 +377,14 @@ const llmTemp = ref(0.7)
 const llmTokens = ref(2048)
 const newTypeName = ref('')
 const newTypeLabel = ref('')
+const showWsKey = ref(false)
+
+const webSearchProviders = [
+  { value: 'none', label: '关闭', desc: '不使用互联网搜索', icon: '⊘' },
+  { value: 'tavily', label: 'Tavily', desc: '专为 AI 优化，推荐', icon: '🔍' },
+  { value: 'serpapi', label: 'SerpAPI', desc: 'Google 搜索 API', icon: '🌐' },
+  { value: 'custom', label: '自定义', desc: '自定义搜索 API', icon: '⚙' },
+]
 
 const providerOptions = [
   { label: 'Ollama (Local)', value: 'ollama' },
@@ -382,6 +452,7 @@ watch(() => settings.value, (s) => {
     Object.assign(form.vectorStore, s.vectorStore)
     Object.assign(form.rag, s.rag)
     Object.assign(form.a2a, s.a2a)
+    if (s.webSearch) Object.assign(form.webSearch!, s.webSearch)
     if (s.documentTypes && s.documentTypes.length > 0) {
       form.documentTypes = s.documentTypes.map(dt => ({ ...dt }))
     }
@@ -656,4 +727,60 @@ onMounted(() => {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Web Search styles */
+.ws-status {
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 10px; margin-left: auto; letter-spacing: 0.3px;
+}
+.ws-on { background: #dcfce7; color: #16a34a; }
+.ws-off { background: #f3f4f6; color: #9ca3af; }
+
+.ws-provider-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px;
+}
+.ws-provider-card {
+  display: flex; align-items: center; gap: 8px; padding: 10px 10px;
+  border: 2px solid #e8e8e8; border-radius: 8px; cursor: pointer;
+  transition: all 0.2s; background: #fff;
+}
+.ws-provider-card:hover { border-color: #c0c0c0; background: #fafafa; }
+.ws-provider-card.active { border-color: #2563eb; background: #eff6ff; }
+.ws-provider-card input[type="radio"] { display: none; }
+.ws-provider-icon { font-size: 20px; line-height: 1; }
+.ws-provider-info { min-width: 0; }
+.ws-provider-name { font-size: 13px; font-weight: 600; color: #333; }
+.ws-provider-desc { font-size: 10px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ws-config-section {
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+  padding: 14px; margin-bottom: 10px;
+}
+.ws-config-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.ws-field { flex: 1; min-width: 180px; }
+.ws-field-sm { flex: 0 0 120px; min-width: 100px; }
+.ws-label { display: block; font-size: 12px; font-weight: 500; color: #555; margin-bottom: 4px; }
+.ws-input-wrap {
+  display: flex; align-items: center; gap: 6px;
+  background: #fff; border: 1px solid #d1d5db; border-radius: 6px;
+  padding: 0 8px; transition: border-color 0.2s;
+}
+.ws-input-wrap:focus-within { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.1); }
+.ws-input-icon { flex-shrink: 0; }
+.ws-input {
+  flex: 1; border: none; outline: none; padding: 7px 0;
+  font-size: 13px; background: transparent; color: #333;
+  font-family: 'SF Mono', 'Cascadia Code', monospace;
+}
+.ws-input::placeholder { color: #b0b0b0; }
+.ws-toggle-vis {
+  background: none; border: none; cursor: pointer; padding: 2px;
+  display: flex; align-items: center; color: #888; flex-shrink: 0;
+}
+.ws-toggle-vis:hover { color: #333; }
+
+.slide-fade-enter-active { transition: all 0.25s ease-out; }
+.slide-fade-leave-active { transition: all 0.15s ease-in; }
+.slide-fade-enter-from { opacity: 0; transform: translateY(-8px); }
+.slide-fade-leave-to { opacity: 0; transform: translateY(-4px); }
 </style>

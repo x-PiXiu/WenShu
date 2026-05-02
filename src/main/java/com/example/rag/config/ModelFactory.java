@@ -2,12 +2,14 @@ package com.example.rag.config;
 
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Model Factory: dynamically creates ChatModel / EmbeddingModel from config
@@ -16,6 +18,10 @@ import java.time.Duration;
 public class ModelFactory {
 
     public static ChatModel createChatModel(AppConfiguration.LlmConfig config) {
+        return createChatModel(config, List.of());
+    }
+
+    public static ChatModel createChatModel(AppConfiguration.LlmConfig config, List<ChatModelListener> listeners) {
         var builder = OpenAiChatModel.builder()
                 .apiKey(config.apiKey)
                 .baseUrl(config.baseUrl)
@@ -28,12 +34,18 @@ public class ModelFactory {
         if (config.maxTokens != null) {
             builder.maxTokens(config.maxTokens);
         }
+        if (listeners != null && !listeners.isEmpty()) {
+            builder.listeners(listeners);
+        }
 
         return builder.build();
     }
 
     public static StreamingChatModel createStreamingChatModel(AppConfiguration.LlmConfig config) {
-        // SSE streaming can last minutes: set generous callTimeout to avoid premature cutoff
+        return createStreamingChatModel(config, List.of());
+    }
+
+    public static StreamingChatModel createStreamingChatModel(AppConfiguration.LlmConfig config, List<ChatModelListener> listeners) {
         var builder = OpenAiStreamingChatModel.builder()
                 .apiKey(config.apiKey)
                 .baseUrl(config.baseUrl)
@@ -45,6 +57,9 @@ public class ModelFactory {
         }
         if (config.maxTokens != null) {
             builder.maxTokens(config.maxTokens);
+        }
+        if (listeners != null && !listeners.isEmpty()) {
+            builder.listeners(listeners);
         }
 
         return builder.build();

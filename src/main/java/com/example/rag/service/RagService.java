@@ -22,10 +22,14 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.listener.ChatModelListener;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.TokenStream;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 
 import java.nio.file.Path;
@@ -54,6 +58,10 @@ public class RagService {
     private final AppConfiguration config;
     private final DocumentMetaStore metaStore;
     private volatile MemoryStore memoryStore;
+    private volatile List<ChatModelListener> listeners = List.of();
+    private volatile com.example.rag.tools.ToolEngine toolEngine;
+    private volatile com.example.rag.tools.WebSearcher webSearcher;
+    private Object[] toolObjects = new Object[0];
     private int documentCount = 0;
     private int segmentCount = 0;
 
@@ -67,12 +75,29 @@ public class RagService {
         this.memoryStore = memoryStore;
     }
 
+    public void setListeners(List<ChatModelListener> listeners) {
+        this.listeners = listeners != null ? listeners : List.of();
+        rebuildModels();
+    }
+
+    public void setToolEngine(com.example.rag.tools.ToolEngine engine) {
+        this.toolEngine = engine;
+    }
+
+    public void setWebSearcher(com.example.rag.tools.WebSearcher searcher) {
+        this.webSearcher = searcher;
+    }
+
+    public void setToolObjects(Object... objects) {
+        this.toolObjects = objects != null ? objects : new Object[0];
+    }
+
     /**
      * 根据配置重建所有模型实例
      */
     public synchronized void rebuildModels() {
-        this.chatModel = ModelFactory.createChatModel(config.getLlm());
-        this.streamingChatModel = ModelFactory.createStreamingChatModel(config.getLlm());
+        this.chatModel = ModelFactory.createChatModel(config.getLlm(), listeners);
+        this.streamingChatModel = ModelFactory.createStreamingChatModel(config.getLlm(), listeners);
         this.embeddingModel = ModelFactory.createEmbeddingModel(config.getEmbedding());
         this.store = VectorStoreFactory.create(config.getVectorStore());
 
@@ -197,6 +222,7 @@ public class RagService {
 
     /**
      * 带对话历史 + 自定义智能体提示词的 RAG 问答
+     * 使用 AiServices 自动管理 Tool Calling 多轮循环
      */
     public RagAnswer askWithContext(String question, List<HistoryEntry> history, String agentPrompt) {
         List<SearchResult> results = searcher.search(question);
@@ -205,25 +231,12 @@ public class RagService {
                 .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
                 .toList();
 
-        String systemContent = buildContextWithMemories(question, agentPrompt, refs);
+        String systemContent = buildSystemContent(question, agentPrompt, refs, results);
 
-        List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(systemContent));
+        var memory = buildChatMemory(history, systemContent);
+        var assistant = buildAssistant(memory);
 
-        int start = Math.max(0, history.size() - 10);
-        for (int i = start; i < history.size(); i++) {
-            HistoryEntry entry = history.get(i);
-            if ("user".equals(entry.role())) {
-                messages.add(UserMessage.from(entry.content()));
-            } else if ("assistant".equals(entry.role())) {
-                messages.add(AiMessage.from(entry.content()));
-            }
-        }
-
-        messages.add(UserMessage.from(question));
-
-        ChatResponse chatResponse = chatModel.chat(messages);
-        String answer = stripThinkTags(chatResponse.aiMessage().text());
+        String answer = stripThinkTags(assistant.chat(question));
         if (answer == null) {
             answer = "未能生成回答。";
         }
@@ -239,49 +252,32 @@ public class RagService {
     }
 
     /**
-     * 准备流式上下文：执行 RAG 检索、构建消息列表，但不调用 LLM
+     * 流式 Agentic 问答：返回 TokenStream + sources
+     * AiServices 自动管理 Tool Calling 循环（包括流式模式）
      */
-    public StreamContext prepareStreamContext(String question, List<HistoryEntry> history) {
-        return prepareStreamContext(question, history, null);
-    }
-
-    /**
-     * 准备流式上下文（带自定义智能体提示词）
-     */
-    public StreamContext prepareStreamContext(String question, List<HistoryEntry> history, String agentPrompt) {
+    public AgenticStreamContext prepareAgenticStream(String question, List<HistoryEntry> history, String agentPrompt) {
         List<SearchResult> results = searcher.search(question);
 
         List<Reference> refs = results.stream()
                 .map(r -> new Reference(r.text(), r.source(), r.vectorScore()))
                 .toList();
 
-        String systemContent = buildContextWithMemories(question, agentPrompt, refs);
+        String systemContent = buildSystemContent(question, agentPrompt, refs, results);
 
-        List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(systemContent));
-
-        int start = Math.max(0, history.size() - 10);
-        for (int i = start; i < history.size(); i++) {
-            HistoryEntry entry = history.get(i);
-            if ("user".equals(entry.role())) {
-                messages.add(UserMessage.from(entry.content()));
-            } else if ("assistant".equals(entry.role())) {
-                messages.add(AiMessage.from(entry.content()));
-            }
-        }
-
-        messages.add(UserMessage.from(question));
+        var memory = buildChatMemory(history, systemContent);
+        var assistant = buildAssistant(memory);
+        TokenStream tokenStream = assistant.chatStream(question);
 
         List<SourceInfo> sources = new ArrayList<>();
         for (int i = 0; i < results.size(); i++) {
             sources.add(toSourceInfo(i + 1, results.get(i)));
         }
 
-        return new StreamContext(messages, sources);
+        return new AgenticStreamContext(tokenStream, sources);
     }
 
     /**
-     * 流式生成：将消息列表发送给 StreamingChatModel，通过回调逐 token 输出
+     * 流式生成：将消息列表发送给 StreamingChatModel（用于博客等不走 AiServices 的路径）
      */
     public void streamGenerate(List<ChatMessage> messages, StreamingChatResponseHandler handler) {
         streamingChatModel.chat(messages, handler);
@@ -712,6 +708,70 @@ public class RagService {
         return text.replaceAll("(?s)<think\\s*>.*?</\\s*think\\s*>", "").trim();
     }
 
+    // ===== AiServices Helpers =====
+
+    /**
+     * 构建 AiServices 助手实例（per-request，携带 ChatMemory + tools）
+     * System message 已在 buildChatMemory 中作为首条消息加入，避免某些模型不兼容 .systemMessage()
+     */
+    private RagAssistant buildAssistant(MessageWindowChatMemory memory) {
+        var builder = AiServices.builder(RagAssistant.class)
+                .chatModel(chatModel)
+                .streamingChatModel(streamingChatModel)
+                .chatMemory(memory)
+                .maxSequentialToolsInvocations(10);
+        if (toolObjects.length > 0) {
+            builder.tools(toolObjects);
+        }
+        return builder.build();
+    }
+
+    /**
+     * 从历史记录构建 ChatMemory，system message 作为首条消息插入。
+     * 使用 alwaysKeepSystemMessageFirst 确保 system message 不会被窗口淘汰。
+     */
+    private MessageWindowChatMemory buildChatMemory(List<HistoryEntry> history, String systemContent) {
+        var memory = MessageWindowChatMemory.builder()
+                .maxMessages(50)
+                .alwaysKeepSystemMessageFirst(true)
+                .build();
+        if (systemContent != null && !systemContent.isBlank()) {
+            memory.add(SystemMessage.from(systemContent));
+        }
+        int start = Math.max(0, history.size() - 10);
+        for (int i = start; i < history.size(); i++) {
+            HistoryEntry entry = history.get(i);
+            if ("user".equals(entry.role())) {
+                memory.add(UserMessage.from(entry.content()));
+            } else if ("assistant".equals(entry.role())) {
+                memory.add(AiMessage.from(entry.content()));
+            }
+        }
+        return memory;
+    }
+
+    /**
+     * 构建完整的 system prompt（RAG 上下文 + 记忆 + Web 搜索回退）
+     */
+    private String buildSystemContent(String question, String agentPrompt, List<Reference> refs, List<SearchResult> results) {
+        String systemContent = buildContextWithMemories(question, agentPrompt, refs);
+
+        if (results.isEmpty() && webSearcher != null && webSearcher.isConfigured()) {
+            try {
+                String webResults = webSearcher.search(question);
+                if (webResults != null && !webResults.isBlank()) {
+                    systemContent += "\n\n【互联网搜索结果】\n" + webResults
+                            + "\n\n注意：以上内容来自互联网搜索，请根据这些信息回答用户问题，并注明信息来源。";
+                }
+            } catch (Exception ignored) {}
+        }
+
+        return systemContent;
+    }
+
+    // Agentic streaming context: TokenStream + sources
+    public record AgenticStreamContext(TokenStream tokenStream, List<SourceInfo> sources) {}
+
     private String buildContextWithMemories(String question, String agentPrompt, List<Reference> refs) {
         String base = RagPromptTemplate.buildSystemContext(agentPrompt, refs);
 
@@ -740,6 +800,14 @@ public class RagService {
 
     public HybridSearcher getSearcher() {
         return searcher;
+    }
+
+    public MemoryStore getMemoryStore() {
+        return memoryStore;
+    }
+
+    public ChatModel getChatModel() {
+        return chatModel;
     }
 
     // ===== Records =====

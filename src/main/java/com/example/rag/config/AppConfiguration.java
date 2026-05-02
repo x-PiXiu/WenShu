@@ -25,6 +25,7 @@ public class AppConfiguration {
     private RagConfig rag;
     private A2AConfig a2a;
     private BlogConfig blog;
+    private WebSearchConfig webSearch;
     private List<DocumentTypeConfig> documentTypes;
 
     public static class ServerConfig {
@@ -83,6 +84,13 @@ public class AppConfiguration {
         public boolean autoSummary = true;
     }
 
+    public static class WebSearchConfig {
+        public String provider = "none";    // none / tavily / serpapi / custom
+        public String apiKey = "";
+        public String baseUrl = "";         // custom provider URL template
+        public int maxResults = 5;
+    }
+
     public static class DocumentTypeConfig {
         public String name;
         public String label;
@@ -136,6 +144,7 @@ public class AppConfiguration {
         config.rag = new RagConfig();
         config.a2a = new A2AConfig();
         config.blog = new BlogConfig();
+        config.webSearch = new WebSearchConfig();
         config.documentTypes = createDefaultDocumentTypes();
         return config;
     }
@@ -150,6 +159,7 @@ public LlmConfig getLlm() { return llm; }
     public RagConfig getRag() { return rag; }
     public A2AConfig getA2a() { return a2a; }
     public BlogConfig getBlog() { return blog != null ? blog : new BlogConfig(); }
+    public WebSearchConfig getWebSearch() { return webSearch != null ? webSearch : new WebSearchConfig(); }
 
     public void setLlm(LlmConfig llm) { this.llm = llm; }
     public void setEmbedding(EmbeddingConfig embedding) { this.embedding = embedding; }
@@ -157,6 +167,7 @@ public LlmConfig getLlm() { return llm; }
     public void setRag(RagConfig rag) { this.rag = rag; }
     public void setA2a(A2AConfig a2a) { this.a2a = a2a; }
     public void setBlog(BlogConfig blog) { this.blog = blog; }
+    public void setWebSearch(WebSearchConfig webSearch) { this.webSearch = webSearch; }
 
     public List<DocumentTypeConfig> getDocumentTypes() {
         return documentTypes != null ? documentTypes : createDefaultDocumentTypes();

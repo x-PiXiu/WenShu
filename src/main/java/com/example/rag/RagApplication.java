@@ -16,6 +16,8 @@ import com.example.rag.eval.EvalResultStore.EvalResult;
 import com.example.rag.eval.EvalTestCaseStore;
 import com.example.rag.eval.RagEvaluator;
 import com.example.rag.parser.AutoDocumentParser;
+import com.example.rag.observability.LlmCallListener;
+import com.example.rag.observability.LlmCallStore;
 import com.example.rag.service.MemoryStore;
 import com.example.rag.service.RagService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -61,12 +63,14 @@ public class RagApplication {
     private static ChatStore chatStore;
     private static AgentStore agentStore;
     private static MemoryStore memoryStore;
+    private static LlmCallStore llmCallStore;
     private static BlogStore blogStore;
     private static BlogIndexer blogIndexer;
     private static MediaStore mediaStore;
     private static AuthFilter authFilter;
     private static EvalTestCaseStore evalTestCaseStore;
     private static EvalResultStore evalResultStore;
+    private static com.example.rag.tools.ToolEngine toolEngine;
 
     // Active streaming tasks: conversationId -> AbortController
     private static final ConcurrentHashMap<String, StreamAbortController> activeStreams = new ConcurrentHashMap<>();
@@ -84,6 +88,21 @@ public class RagApplication {
         ragService = new RagService(config);
         System.out.println("[INIT] Models initialized: LLM=" + config.getLlm().modelName
                 + ", Embedding=" + config.getEmbedding().modelName);
+
+        // 2.1 LLM observability (must be before indexKnowledgeBase to avoid rebuildModels clearing the store)
+        llmCallStore = new LlmCallStore();
+        var llmListener = new LlmCallListener(llmCallStore, "chat");
+        ragService.setListeners(List.of(llmListener));
+
+        // 2.2 Web Search + Tool Engine
+        var webSearcher = new com.example.rag.tools.WebSearcher(config.getWebSearch());
+        ragService.setWebSearcher(webSearcher);
+        var ragTools = new com.example.rag.tools.RagTools(ragService, webSearcher, config);
+        toolEngine = new com.example.rag.tools.ToolEngine(ragTools);
+        ragService.setToolEngine(toolEngine);
+        ragService.setToolObjects(ragTools);
+        System.out.println("[INIT] Tool engine initialized with " + toolEngine.getSpecifications().size() + " tools");
+        System.out.println("[INIT] Web search provider: " + config.getWebSearch().provider);
 
         // 3. Index knowledge base
         try {
@@ -105,6 +124,10 @@ public class RagApplication {
         memoryStore = new MemoryStore();
         ragService.setMemoryStore(memoryStore);
         memoryStore.recalculateDecay();
+
+        // 4.2 Inject stores into tool engine
+        ragTools.setMemoryStore(memoryStore);
+        ragTools.setChatStore(chatStore);
 
         // 4.2 Schedule hourly memory decay recalculation
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
@@ -260,6 +283,21 @@ public class RagApplication {
                 config.setDocumentTypes(newConfig.getDocumentTypes());
             }
 
+            if (newConfig.getA2a() != null) {
+                config.getA2a().enabled = newConfig.getA2a().enabled;
+                config.getA2a().agentName = nvl(newConfig.getA2a().agentName, config.getA2a().agentName);
+                config.getA2a().agentDescription = nvl(newConfig.getA2a().agentDescription, config.getA2a().agentDescription);
+            }
+
+            if (newConfig.getWebSearch() != null) {
+                var ws = newConfig.getWebSearch();
+                var curWs = config.getWebSearch();
+                curWs.provider = nvl(ws.provider, curWs.provider);
+                curWs.apiKey = nvl(ws.apiKey, curWs.apiKey);
+                curWs.baseUrl = nvl(ws.baseUrl, curWs.baseUrl);
+                if (ws.maxResults > 0) curWs.maxResults = ws.maxResults;
+            }
+
             config.save();
             ragService.rebuildModels();
             ctx.json(Map.of("status", "ok", "message", "Settings saved and models rebuilt"));
@@ -412,6 +450,14 @@ public class RagApplication {
             List<Task> tasks = taskManager.listRecent(20);
             ctx.json(tasks);
         });
+
+        // ===== MCP (Model Context Protocol) Server =====
+        if (config.getA2a().enabled) {
+            var mcpHandler = new com.example.rag.mcp.McpServerHandler(ragService, toolEngine);
+            app.get("/mcp/sse", mcpHandler::handleSse);
+            app.post("/mcp/message", mcpHandler::handleMessage);
+            System.out.println("[INIT] MCP Server enabled at /mcp/sse");
+        }
 
         // ===== Blog Public Routes =====
         registerBlogRoutes(app);
@@ -875,6 +921,32 @@ public class RagApplication {
             int updated = memoryStore.recalculateDecay();
             ctx.json(Map.of("status", "ok", "updated", updated));
         });
+
+        // --- Admin: LLM Monitoring ---
+        app.get("/api/admin/llm/calls", ctx -> {
+            int limit = 50;
+            try { limit = Integer.parseInt(ctx.queryParam("limit")); } catch (Exception ignored) {}
+            ctx.json(llmCallStore.listRecent(limit));
+        });
+
+        app.get("/api/admin/llm/stats", ctx -> {
+            Map<String, Object> stats = new java.util.LinkedHashMap<>();
+            stats.put("today", llmCallStore.getTodayStats());
+            stats.put("total", llmCallStore.getTotalStats());
+            ctx.json(stats);
+        });
+
+        app.get("/api/admin/llm/daily", ctx -> {
+            int days = 7;
+            try { days = Integer.parseInt(ctx.queryParam("days")); } catch (Exception ignored) {}
+            ctx.json(llmCallStore.getDailyStats(days));
+        });
+
+        app.get("/api/admin/llm/hourly", ctx -> ctx.json(llmCallStore.getHourlyStats()));
+
+        app.get("/api/admin/llm/type-distribution", ctx -> ctx.json(llmCallStore.getTypeDistribution()));
+
+        app.get("/api/admin/llm/latency-distribution", ctx -> ctx.json(llmCallStore.getLatencyDistribution()));
     }
 
     // ===== Chat Handler =====
@@ -1011,44 +1083,42 @@ public class RagApplication {
                 Map.of("phase", "searching", "message", "正在检索知识库...")) + "\n\n");
         writer.flush();
 
-        // Prepare RAG context (retrieval only, no LLM call)
+        // Prepare RAG context + AiServices (TokenStream handles tool calling automatically)
         String agentPrompt = resolveAgentPrompt(agentId);
-        RagService.StreamContext streamCtx = ragService.prepareStreamContext(question, history, agentPrompt);
+        RagService.AgenticStreamContext agenticCtx = ragService.prepareAgenticStream(question, history, agentPrompt);
 
         // Send post-retrieval status
         writer.write("event: status\ndata: " + MAPPER.writeValueAsString(
                 Map.of("phase", "generating",
-                       "message", "找到 " + streamCtx.sources().size() + " 个片段，正在生成回答...",
-                       "segments", streamCtx.sources().size())) + "\n\n");
+                       "message", "找到 " + agenticCtx.sources().size() + " 个片段，正在生成回答...",
+                       "segments", agenticCtx.sources().size())) + "\n\n");
         writer.flush();
 
         // Send sources event
-        String sourcesJson = MAPPER.writeValueAsString(streamCtx.sources());
+        String sourcesJson = MAPPER.writeValueAsString(agenticCtx.sources());
         writer.write("event: sources\ndata: " + sourcesJson + "\n\n");
         writer.flush();
 
-        // Stream LLM tokens with stall detection
-        // Safety net: some providers don't send [DONE], so onCompleteResponse may never fire.
-        // If no token arrives for 5s after generation started, consider the stream complete.
+        // Stream via TokenStream (AiServices manages tool calling loop automatically)
         StringBuilder fullAnswer = new StringBuilder();
         CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<String> errorRef = new AtomicReference<>();
         AtomicBoolean doneSent = new AtomicBoolean(false);
         AtomicLong lastTokenTime = new AtomicLong(0);
         AtomicBoolean firstTokenReceived = new AtomicBoolean(false);
 
+        // Watchdog for stall detection (some providers don't fire onCompleteResponse)
         java.util.concurrent.ScheduledExecutorService watchdog =
                 java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         watchdog.scheduleAtFixedRate(() -> {
             if (!firstTokenReceived.get() || doneSent.get()) return;
             long elapsed = System.currentTimeMillis() - lastTokenTime.get();
-            if (elapsed > 5_000 && doneSent.compareAndSet(false, true)) {
-                System.err.println("[STREAM] Watchdog: no token for 5s, sending done");
+            if (elapsed > 15_000 && doneSent.compareAndSet(false, true)) {
+                System.err.println("[STREAM] Watchdog: no token for 15s, sending done");
                 try {
                     Map<String, Object> donePayload = new LinkedHashMap<>();
                     donePayload.put("answer", fullAnswer.toString());
                     donePayload.put("conversationId", finalConvId);
-                    donePayload.put("sources", streamCtx.sources());
+                    donePayload.put("sources", agenticCtx.sources());
                     writer.write("event: done\ndata: " + MAPPER.writeValueAsString(donePayload) + "\n\n");
                     writer.flush();
                 } catch (Exception ignored) {}
@@ -1056,82 +1126,81 @@ public class RagApplication {
             }
         }, 1, 1, java.util.concurrent.TimeUnit.SECONDS);
 
-        ragService.streamGenerate(streamCtx.messages(), new StreamingChatResponseHandler() {
-            @Override
-            public void onPartialResponse(String token) {
-                if (abortCtrl.aborted().get()) return;
-                fullAnswer.append(token);
-                lastTokenTime.set(System.currentTimeMillis());
-                firstTokenReceived.set(true);
-                try {
-                    writer.write("event: token\ndata: " + MAPPER.writeValueAsString(
-                            Map.of("t", token)) + "\n\n");
-                    writer.flush();
-                } catch (Exception ignored) {}
-            }
-
-            @Override
-            public void onCompleteResponse(dev.langchain4j.model.chat.response.ChatResponse response) {
-                System.out.println("[STREAM] onCompleteResponse fired");
-                watchdog.shutdownNow();
-                if (doneSent.compareAndSet(false, true)) {
+        agenticCtx.tokenStream()
+                .onPartialResponse(token -> {
+                    if (abortCtrl.aborted().get()) return;
+                    fullAnswer.append(token);
+                    lastTokenTime.set(System.currentTimeMillis());
+                    firstTokenReceived.set(true);
                     try {
-                        Map<String, Object> donePayload = new LinkedHashMap<>();
-                        donePayload.put("answer", fullAnswer.toString());
-                        donePayload.put("conversationId", finalConvId);
-                        donePayload.put("sources", streamCtx.sources());
-                        writer.write("event: done\ndata: " + MAPPER.writeValueAsString(donePayload) + "\n\n");
+                        writer.write("event: token\ndata: " + MAPPER.writeValueAsString(
+                                Map.of("t", token)) + "\n\n");
                         writer.flush();
-                    } catch (Exception e) {
-                        errorRef.set(e.getMessage());
+                    } catch (Exception ignored) {}
+                })
+                .onToolExecuted(toolExecution -> {
+                    lastTokenTime.set(System.currentTimeMillis());
+                    try {
+                        writer.write("event: status\ndata: " + MAPPER.writeValueAsString(
+                                Map.of("phase", "tool_call",
+                                       "message", "调用工具: " + toolExecution.request().name())) + "\n\n");
+                        writer.flush();
+                    } catch (Exception ignored) {}
+                })
+                .onCompleteResponse(response -> {
+                    watchdog.shutdownNow();
+                    if (doneSent.compareAndSet(false, true)) {
+                        try {
+                            Map<String, Object> donePayload = new LinkedHashMap<>();
+                            donePayload.put("answer", fullAnswer.toString());
+                            donePayload.put("conversationId", finalConvId);
+                            donePayload.put("sources", agenticCtx.sources());
+                            writer.write("event: done\ndata: " + MAPPER.writeValueAsString(donePayload) + "\n\n");
+                            writer.flush();
+                        } catch (Exception ignored) {}
                     }
-                }
-                latch.countDown();
+                    latch.countDown();
 
-                // --- Slow work after latch release ---
-                try {
-                    saveStreamMessages(finalConvId, question, fullAnswer.toString(), streamCtx);
-                } catch (Exception e) {
-                    System.err.println("[WARN] Failed to save stream messages: " + e.getMessage());
-                }
-
-                String capturedAnswer = fullAnswer.toString();
-                CompletableFuture.runAsync(() -> {
+                    // Save messages to ChatStore
                     try {
-                        List<RagService.HistoryEntry> fullHistory = new ArrayList<>(history);
-                        fullHistory.add(new RagService.HistoryEntry("user", question));
-                        fullHistory.add(new RagService.HistoryEntry("assistant", capturedAnswer));
-                        if (fullHistory.size() >= 6 && fullHistory.size() % 6 == 0) {
-                            String summary = ragService.summarizeConversation(fullHistory);
-                            if (summary != null && !summary.isBlank()) {
-                                ragService.storeMemory(finalConvId, summary, fullHistory);
+                        saveStreamMessages(finalConvId, question, fullAnswer.toString(), agenticCtx.sources());
+                    } catch (Exception e) {
+                        System.err.println("[WARN] Failed to save stream messages: " + e.getMessage());
+                    }
+
+                    // Long-term memory generation
+                    String capturedAnswer = fullAnswer.toString();
+                    CompletableFuture.runAsync(() -> {
+                        try {
+                            List<RagService.HistoryEntry> fullHistory = new ArrayList<>(history);
+                            fullHistory.add(new RagService.HistoryEntry("user", question));
+                            fullHistory.add(new RagService.HistoryEntry("assistant", capturedAnswer));
+                            if (fullHistory.size() >= 6 && fullHistory.size() % 6 == 0) {
+                                String summary = ragService.summarizeConversation(fullHistory);
+                                if (summary != null && !summary.isBlank()) {
+                                    ragService.storeMemory(finalConvId, summary, fullHistory);
+                                }
                             }
-                        }
-                    } catch (Exception ignored) {}
-                });
-            }
+                        } catch (Exception ignored) {}
+                    });
+                })
+                .onError(error -> {
+                    watchdog.shutdownNow();
+                    if (doneSent.compareAndSet(false, true)) {
+                        try {
+                            String msg = error.getMessage() != null ? error.getMessage() : "Unknown error";
+                            writer.write("event: error\ndata: " + MAPPER.writeValueAsString(
+                                    Map.of("error", msg)) + "\n\n");
+                            writer.flush();
+                        } catch (Exception ignored) {}
+                    }
+                    latch.countDown();
 
-            @Override
-            public void onError(Throwable error) {
-                watchdog.shutdownNow();
-                if (doneSent.compareAndSet(false, true)) {
                     try {
-                        String msg = error.getMessage() != null ? error.getMessage() : "Unknown error";
-                        writer.write("event: error\ndata: " + MAPPER.writeValueAsString(
-                                Map.of("error", msg)) + "\n\n");
-                        writer.flush();
+                        saveStreamMessages(finalConvId, question, fullAnswer.toString(), agenticCtx.sources());
                     } catch (Exception ignored) {}
-                }
-                errorRef.set(error.getMessage());
-                latch.countDown();
-
-                try {
-                    saveStreamMessages(finalConvId, question, fullAnswer.toString(), streamCtx);
-                } catch (Exception e) {
-                    System.err.println("[WARN] Failed to save partial messages: " + e.getMessage());
-                }
-            }
-        });
+                })
+                .start();
 
         // Block until streaming completes (hard timeout as last resort)
         boolean completed = latch.await(120, java.util.concurrent.TimeUnit.SECONDS);
@@ -1147,14 +1216,14 @@ public class RagApplication {
                 Map<String, Object> donePayload = new LinkedHashMap<>();
                 donePayload.put("answer", fullAnswer.toString());
                 donePayload.put("conversationId", finalConvId);
-                donePayload.put("sources", streamCtx.sources());
+                donePayload.put("sources", agenticCtx.sources());
                 writer.write("event: done\ndata: " + MAPPER.writeValueAsString(donePayload) + "\n\n");
                 writer.flush();
             } catch (Exception ignored) {}
 
             if (fullAnswer.length() > 0) {
                 try {
-                    saveStreamMessages(finalConvId, question, fullAnswer.toString(), streamCtx);
+                    saveStreamMessages(finalConvId, question, fullAnswer.toString(), agenticCtx.sources());
                 } catch (Exception ignored) {}
             }
         }
@@ -1187,12 +1256,27 @@ public class RagApplication {
      * Uses a single connection + transaction to avoid 5 separate pool borrow/return cycles.
      */
     private static void saveStreamMessages(String convId, String question,
+                                           String answer, List<RagService.SourceInfo> sources) {
+        List<ChatStore.MessageSource> msgSources = sources.stream()
+                .map(s -> new ChatStore.MessageSource(
+                        s.index(), s.text(), s.source(), s.rrfScore(), s.vectorScore(),
+                        s.confidence(), s.confidenceLabel(), s.explanation()))
+                .toList();
+        saveStreamMessagesInner(convId, question, answer, msgSources);
+    }
+
+    private static void saveStreamMessages(String convId, String question,
                                            String answer, RagService.StreamContext streamCtx) {
         List<ChatStore.MessageSource> msgSources = streamCtx.sources().stream()
                 .map(s -> new ChatStore.MessageSource(
                         s.index(), s.text(), s.source(), s.rrfScore(), s.vectorScore(),
                         s.confidence(), s.confidenceLabel(), s.explanation()))
                 .toList();
+        saveStreamMessagesInner(convId, question, answer, msgSources);
+    }
+
+    private static void saveStreamMessagesInner(String convId, String question,
+                                                 String answer, List<ChatStore.MessageSource> msgSources) {
         try {
             chatStore.saveMessagesInTransaction(convId, question, answer, msgSources);
         } catch (Exception e) {

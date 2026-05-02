@@ -188,6 +188,7 @@ export function useAdmin() {
 
   return {
     adminToken, isLoggedIn,
+    authHeaders,
     login, logout,
     listAllPosts, createPost, updatePost, deletePost, publishPost, unpublishPost,
     createCategory, updateCategory, deleteCategory,

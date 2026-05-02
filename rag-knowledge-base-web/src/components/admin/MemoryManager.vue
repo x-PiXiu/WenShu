@@ -43,7 +43,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import type { MemoryEntry } from '../../types/chat'
+import { useAdmin } from '../../composables/useAdmin'
 
+const { authHeaders } = useAdmin()
 const memories = ref<MemoryEntry[]>([])
 const loading = ref(false)
 const errorMessage = ref('')
@@ -51,7 +53,7 @@ const errorMessage = ref('')
 async function loadMemories() {
   loading.value = true
   try {
-    const res = await fetch('/api/admin/memories')
+    const res = await fetch('/api/admin/memories', { headers: authHeaders() })
     if (res.ok) memories.value = await res.json()
   } catch { /* ignore */ }
   loading.value = false
@@ -60,7 +62,7 @@ async function loadMemories() {
 async function recalcDecay() {
   loading.value = true
   try {
-    await fetch('/api/admin/memories/recalc', { method: 'POST' })
+    await fetch('/api/admin/memories/recalc', { method: 'POST', headers: authHeaders() })
     await loadMemories()
   } catch { /* ignore */ }
   loading.value = false
@@ -69,7 +71,7 @@ async function recalcDecay() {
 async function doDelete(mem: MemoryEntry) {
   if (!confirm(`确定删除该记忆？\n"${mem.summary.substring(0, 60)}..."`)) return
   try {
-    await fetch(`/api/admin/memories/${mem.id}`, { method: 'DELETE' })
+    await fetch(`/api/admin/memories/${mem.id}`, { method: 'DELETE', headers: authHeaders() })
     memories.value = memories.value.filter(m => m.id !== mem.id)
   } catch {
     errorMessage.value = '删除失败'
