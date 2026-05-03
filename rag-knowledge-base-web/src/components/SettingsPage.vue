@@ -318,52 +318,26 @@
         </div>
       </div>
 
-      <!-- Prompt Template Management -->
-      <div class="settings-card" style="margin-bottom: 16px">
-        <div class="card-header" @click="promptExpanded = !promptExpanded" style="cursor: pointer">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8913A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-          <span class="card-title">Prompt 模板管理</span>
-          <span class="prompt-count">{{ Object.keys(form.prompts || {}).length }} 个模板</span>
-          <svg :class="['chevron', { expanded: promptExpanded }]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B8A898" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div v-if="promptExpanded" class="prompt-section">
-          <div v-for="(cat, catIdx) in promptCategories" :key="cat.key" class="prompt-category">
-            <div class="prompt-cat-header" @click="cat.expanded = !cat.expanded">
-              <svg :class="['chevron', { expanded: cat.expanded }]" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B8A898" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-              <span class="prompt-cat-label">{{ cat.label }}</span>
-              <span class="prompt-cat-count">{{ cat.keys.length }}</span>
-            </div>
-            <div v-if="cat.expanded" class="prompt-items">
-              <div v-for="key in cat.keys" :key="key" class="prompt-item">
-                <div class="prompt-item-header">
-                  <span class="prompt-item-desc">{{ form.prompts?.[key]?.description || key }}</span>
-                  <button class="prompt-reset-btn" @click="resetPrompt(key)" title="恢复默认">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                    重置
-                  </button>
-                </div>
-                <textarea
-                  class="prompt-textarea"
-                  v-model="form.prompts![key].template"
-                  rows="6"
-                  :placeholder="'Prompt 模板内容...'"
-                ></textarea>
-                <div v-if="promptHasVars(key)" class="prompt-var-hint">
-                  支持变量：<code v-for="v in promptVars(key)" :key="v">{{ v }}</code>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="info-tip">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#D97B2B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-            修改后点击「保存设置」生效。变量使用 <code>${'{'}变量名{'}'}</code> 格式，如 <code>${'{'}cardCount{'}'}</code>。
-          </div>
-        </div>
-      </div>
 
       <!-- Agent Persona Management -->
       <div class="settings-card" style="margin-bottom: 16px">
         <AgentManager />
+      </div>
+
+      <!-- Security: Admin Password -->
+      <div class="settings-card" style="margin-bottom: 16px">
+        <div class="card-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8913A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <span class="card-title">安全设置</span>
+        </div>
+        <n-form label-placement="left" label-width="100">
+          <n-form-item label="管理密码">
+            <n-input v-model:value="form.blog!.adminPassword" type="password" show-password-on="click" placeholder="留空则免登录" />
+            <template #feedback>
+              <span class="field-hint">留空 = 无需密码直接进入管理后台。设置密码后需登录才能访问管理功能。修改后需保存并重新登录。</span>
+            </template>
+          </n-form-item>
+        </n-form>
       </div>
 
       <!-- Actions -->
@@ -396,9 +370,11 @@ import {
 import { useSettings } from '../composables/useSettings'
 import { PROVIDER_PRESETS, EMBEDDING_PRESETS } from '../types/chat'
 import type { AppSettings, DocumentTypeConfig, PromptEntry } from '../types/chat'
+import { useAdmin } from '../composables/useAdmin'
 import AgentManager from './AgentManager.vue'
 
 const { settings, loading, saving, message, fetchSettings, saveSettings, reindex } = useSettings()
+const { logout } = useAdmin()
 
 const form = reactive<AppSettings>({
   llm: { provider: 'ollama', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', modelName: 'qwen2.5', temperature: 0.7, maxTokens: 2048, streaming: true },
@@ -406,6 +382,7 @@ const form = reactive<AppSettings>({
   vectorStore: { type: 'memory', chromaBaseUrl: 'http://localhost:8000', collectionName: 'rag_knowledge_base', milvusHost: 'localhost', milvusPort: 19530, embeddingDimension: 768 },
   rag: { chunkSize: 300, chunkOverlap: 30, vectorTopK: 5, keywordTopK: 10, rrfK: 60, minScore: 0.3 },
   a2a: { enabled: true, agentName: '文枢', agentDescription: '' },
+  blog: { adminPassword: '' },
   webSearch: { provider: 'none', apiKey: '', baseUrl: '', maxResults: 5 },
   prompts: {} as Record<string, PromptEntry>,
   documentTypes: [
@@ -522,6 +499,7 @@ watch(() => settings.value, (s) => {
     Object.assign(form.vectorStore, s.vectorStore)
     Object.assign(form.rag, s.rag)
     Object.assign(form.a2a, s.a2a)
+    if (s.blog) Object.assign(form.blog!, s.blog)
     if (s.webSearch) Object.assign(form.webSearch!, s.webSearch)
     if (s.documentTypes && s.documentTypes.length > 0) {
       form.documentTypes = s.documentTypes.map(dt => ({ ...dt }))

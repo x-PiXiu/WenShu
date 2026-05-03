@@ -3,7 +3,7 @@
     <div class="fc-container">
       <div class="fc-header">
         <h2 class="section-title">闪卡生成器</h2>
-        <span class="fc-hint">上传学习资料，AI 自动生成闪卡，间隔重复高效记忆</span>
+        <span class="fc-hint">上传学习资料，AI 自动生成闪卡，轻松翻看记忆</span>
       </div>
 
       <!-- Input Section -->
@@ -65,7 +65,17 @@
 
       <!-- Deck List -->
       <div class="fc-decks-section">
-        <h3 class="sub-title">我的卡组</h3>
+        <div class="fc-decks-header">
+          <h3 class="sub-title">我的卡组</h3>
+          <button class="fc-import-toggle" @click="triggerImportFile">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            导入卡组
+          </button>
+          <input ref="importFileInput" type="file" accept=".json" hidden @change="handleImportFile" />
+        </div>
+
+        <div v-if="importError" class="fc-import-error-bar">{{ importError }}</div>
+
         <div v-if="decks.length === 0 && !loading" class="fc-empty">还没有卡组，上传学习资料开始生成</div>
         <div class="fc-deck-grid">
           <div v-for="deck in decks" :key="deck.id" class="fc-deck-card" @click="$emit('openDeck', deck.id)">
@@ -74,18 +84,9 @@
               <span>{{ deck.cardCount }} 张卡片</span>
               <span v-if="deck.sourceFile" class="fc-deck-source">{{ deck.sourceFile }}</span>
             </div>
-            <div class="fc-deck-progress">
-              <div class="fc-progress-bar">
-                <div class="fc-progress-fill mastered" :style="{ width: masteryPercent(deck) + '%' }"></div>
-                <div class="fc-progress-fill learning" :style="{ width: learningPercent(deck) + '%', left: masteryPercent(deck) + '%' }"></div>
-              </div>
-              <span class="fc-progress-text">
-                <template v-if="deck.masteredCount > 0">{{ deck.masteredCount }} 掌握</template>
-                <template v-else>{{ deck.cardCount }} 待学</template>
-              </span>
-            </div>
             <div class="fc-deck-actions">
-              <button class="fc-study-btn" @click.stop="$emit('study', deck.id)">学习</button>
+              <button class="fc-study-btn" @click.stop="$emit('openDeck', deck.id)">查看</button>
+              <button class="fc-export-btn" @click.stop="handleExport(deck.id)">导出</button>
               <button class="fc-delete-btn" @click.stop="handleDeleteDeck(deck.id)">删除</button>
             </div>
           </div>
@@ -97,12 +98,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import type { Deck, Difficulty } from '../../types/flashcard'
+import type { Difficulty } from '../../types/flashcard'
 import { useFlashcard } from '../../composables/useFlashcard'
 
 defineEmits<{ openDeck: [id: string]; study: [id: string] }>()
 
-const { decks, loading, generateFromFile, generateFromText, loadDecks, deleteDeck, loadStats } = useFlashcard()
+const { decks, loading, generateFromFile, generateFromText, loadDecks, deleteDeck, exportDeckPdf, importDeckFromFile } = useFlashcard()
 
 const inputMode = ref<'file' | 'text'>('file')
 const selectedFile = ref<File | null>(null)
@@ -112,6 +113,8 @@ const cardCount = ref(20)
 const difficulty = ref<Difficulty>('intermediate')
 const dragActive = ref(false)
 const errorMsg = ref('')
+const importError = ref('')
+const importFileInput = ref<HTMLInputElement | null>(null)
 
 const canGenerate = computed(() => {
   return inputMode.value === 'file' ? !!selectedFile.value : inputText.value.trim().length > 20
@@ -140,7 +143,6 @@ async function handleGenerate() {
     inputText.value = ''
     textTitle.value = ''
     await loadDecks()
-    await loadStats()
   } else {
     errorMsg.value = '生成失败，请检查文件内容或 LLM 配置'
   }
@@ -152,17 +154,30 @@ async function handleDeleteDeck(id: string) {
   await loadDecks()
 }
 
-function masteryPercent(deck: Deck): number {
-  return deck.cardCount > 0 ? (deck.masteredCount / deck.cardCount) * 100 : 0
+async function handleExport(deckId: string) {
+  await exportDeckPdf(deckId)
 }
 
-function learningPercent(deck: Deck): number {
-  if (deck.cardCount === 0) return 0
-  const learned = deck.cardCount - deck.masteredCount
-  return learned > 0 ? Math.min((learned / deck.cardCount) * 100, 100 - masteryPercent(deck)) : 0
+function triggerImportFile() {
+  importFileInput.value?.click()
 }
 
-onMounted(() => { loadDecks(); loadStats() })
+async function handleImportFile(e: Event) {
+  const target = e.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  importError.value = ''
+  const result = await importDeckFromFile(file)
+  if (result) {
+    await loadDecks()
+  } else {
+    importError.value = '导入失败，请检查 JSON 文件格式'
+    setTimeout(() => { importError.value = '' }, 3000)
+  }
+  target.value = ''
+}
+
+onMounted(() => { loadDecks() })
 </script>
 
 <style scoped>
@@ -206,22 +221,23 @@ onMounted(() => { loadDecks(); loadStats() })
 .fc-error { color: #E85D5D; font-size: 13px; margin-bottom: 12px; }
 
 .fc-decks-section { margin-top: 24px; }
+.fc-decks-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+.fc-import-toggle { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid #E8DDD0; border-radius: 6px; padding: 4px 12px; font-size: 12px; color: #8B7E74; cursor: pointer; }
+.fc-import-toggle:hover { border-color: #D97B2B; color: #D97B2B; }
+.fc-import-error-bar { color: #E85D5D; font-size: 12px; margin-bottom: 8px; }
+
 .fc-empty { padding: 32px; text-align: center; color: #B8A898; font-size: 13px; background: #fff; border-radius: 10px; }
 .fc-deck-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 .fc-deck-card { background: #fff; border: 1px solid #E8DDD0; border-radius: 10px; padding: 14px; cursor: pointer; transition: box-shadow 0.2s; }
 .fc-deck-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .fc-deck-title { font-size: 14px; font-weight: 600; color: #3D3028; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fc-deck-meta { font-size: 12px; color: #B8A898; margin-bottom: 8px; display: flex; gap: 8px; }
+.fc-deck-meta { font-size: 12px; color: #B8A898; margin-bottom: 10px; display: flex; gap: 8px; }
 .fc-deck-source { color: #D97B2B; }
-.fc-deck-progress { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.fc-progress-bar { flex: 1; height: 4px; background: #F0E8DD; border-radius: 2px; overflow: hidden; position: relative; }
-.fc-progress-fill { height: 100%; border-radius: 2px; transition: width 0.3s; position: absolute; left: 0; }
-.fc-progress-fill.mastered { background: #16a34a; }
-.fc-progress-fill.learning { background: #CA8A04; }
-.fc-progress-text { font-size: 11px; color: #8B7E74; white-space: nowrap; }
 .fc-deck-actions { display: flex; gap: 6px; }
 .fc-study-btn { padding: 4px 12px; background: #D97B2B; color: #fff; border: none; border-radius: 5px; font-size: 12px; cursor: pointer; }
 .fc-study-btn:hover { background: #C86A20; }
+.fc-export-btn { padding: 4px 10px; background: none; border: 1px solid #E8DDD0; border-radius: 5px; font-size: 12px; color: #8B7E74; cursor: pointer; }
+.fc-export-btn:hover { border-color: #D97B2B; color: #D97B2B; }
 .fc-delete-btn { padding: 4px 10px; background: none; border: 1px solid #E8DDD0; border-radius: 5px; font-size: 12px; color: #B8A898; cursor: pointer; }
 .fc-delete-btn:hover { border-color: #E85D5D; color: #E85D5D; }
 </style>

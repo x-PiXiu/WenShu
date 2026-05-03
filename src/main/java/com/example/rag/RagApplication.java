@@ -29,6 +29,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
 
+import java.awt.Color;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +47,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import java.util.stream.Stream;
 
 /**
@@ -122,7 +130,7 @@ public class RagApplication {
         // 4. A2A setup
         taskManager = new TaskManager();
         chatStore = new ChatStore();
-        agentStore = new AgentStore();
+        agentStore = new AgentStore(config);
 
         // 4.1 Memory store
         memoryStore = new MemoryStore();
@@ -200,23 +208,7 @@ public class RagApplication {
 
         registerRoutes(app);
 
-        // SPA fallback: serve index.html for all non-API, non-static, non-upload routes
-        Path staticDir = Path.of("static").toAbsolutePath();
-        if (Files.isDirectory(staticDir)) {
-            app.get("/*", ctx -> {
-                String path = ctx.path();
-                if (path.startsWith("/api/") || path.startsWith("/uploads/") || path.startsWith("/a2a/")) return;
-                // Skip requests already handled by static file handler (assets/*)
-                if (path.startsWith("/assets/")) return;
-                Path indexHtml = staticDir.resolve("index.html");
-                if (Files.exists(indexHtml)) {
-                    ctx.contentType("text/html; charset=utf-8");
-                    ctx.result(Files.newInputStream(indexHtml));
-                }
-            });
-        }
-
-        // 静态文件服务：/uploads/{filename}
+        // Upload file serving — MUST be registered BEFORE SPA fallback /* handler
         Path uploadsDir = Path.of("uploads").toAbsolutePath();
         try { if (!Files.exists(uploadsDir)) Files.createDirectories(uploadsDir); }
         catch (java.io.IOException e) { System.err.println("[WARN] Cannot create uploads dir: " + e.getMessage()); }
@@ -238,6 +230,21 @@ public class RagApplication {
             ctx.contentType(contentType);
             ctx.result(Files.newInputStream(file));
         });
+
+        // SPA fallback: serve index.html for all non-API, non-static, non-upload routes
+        Path staticDir = Path.of("static").toAbsolutePath();
+        if (Files.isDirectory(staticDir)) {
+            app.get("/*", ctx -> {
+                String path = ctx.path();
+                if (path.startsWith("/api/") || path.startsWith("/uploads/") || path.startsWith("/a2a/")) return;
+                if (path.startsWith("/assets/")) return;
+                Path indexHtml = staticDir.resolve("index.html");
+                if (Files.exists(indexHtml)) {
+                    ctx.contentType("text/html; charset=utf-8");
+                    ctx.result(Files.newInputStream(indexHtml));
+                }
+            });
+        }
 
         app.start(port);
         System.out.println("========================================");
@@ -378,7 +385,20 @@ public class RagApplication {
         app.delete("/api/documents/{filename}", RagApplication::handleDocumentDelete);
 
         // ===== Agent API =====
-        app.get("/api/agents", ctx -> ctx.json(agentStore.list()));
+        app.get("/api/agents", ctx -> {
+            List<AgentStore.Agent> agents = agentStore.list();
+            List<Map<String, Object>> response = agents.stream().map(a -> {
+                String resolved = PromptRegistry.getTemplate(a.promptKey());
+                return Map.<String, Object>of(
+                        "id", a.id(), "name", a.name(), "description", a.description(),
+                        "systemPrompt", resolved != null ? resolved : "",
+                        "promptKey", a.promptKey(),
+                        "avatar", a.avatar(), "isDefault", a.isDefault(),
+                        "createdAt", a.createdAt(), "updatedAt", a.updatedAt()
+                );
+            }).toList();
+            ctx.json(response);
+        });
 
         app.post("/api/agents", ctx -> {
             Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
@@ -391,7 +411,14 @@ public class RagApplication {
                 return;
             }
             AgentStore.Agent agent = agentStore.create(name, description, systemPrompt, avatar);
-            ctx.json(agent);
+            String resolved = PromptRegistry.getTemplate(agent.promptKey());
+            ctx.json(Map.of(
+                    "id", agent.id(), "name", agent.name(), "description", agent.description(),
+                    "systemPrompt", resolved != null ? resolved : "",
+                    "promptKey", agent.promptKey(),
+                    "avatar", agent.avatar(), "isDefault", agent.isDefault(),
+                    "createdAt", agent.createdAt(), "updatedAt", agent.updatedAt()
+            ));
         });
 
         app.put("/api/agents/{id}", ctx -> {
@@ -407,7 +434,14 @@ public class RagApplication {
             }
             try {
                 AgentStore.Agent agent = agentStore.update(id, name, description, systemPrompt, avatar);
-                ctx.json(agent);
+                String resolved = PromptRegistry.getTemplate(agent.promptKey());
+                ctx.json(Map.of(
+                        "id", agent.id(), "name", agent.name(), "description", agent.description(),
+                        "systemPrompt", resolved != null ? resolved : "",
+                        "promptKey", agent.promptKey(),
+                        "avatar", agent.avatar(), "isDefault", agent.isDefault(),
+                        "createdAt", agent.createdAt(), "updatedAt", agent.updatedAt()
+                ));
             } catch (RuntimeException e) {
                 ctx.status(404).json(Map.of("error", e.getMessage()));
             }
@@ -671,14 +705,28 @@ public class RagApplication {
 
         // --- Admin: Login ---
         app.post("/api/admin/login", ctx -> {
+            String cfgPassword = config.getBlog().adminPassword;
+            // 无密码模式：直接返回免登录 token
+            if (cfgPassword == null || cfgPassword.isBlank()) {
+                String token = AuthFilter.generateToken("no-password");
+                ctx.json(Map.of("token", token, "status", "ok", "passwordEnabled", false));
+                return;
+            }
             Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
             String password = body.get("password");
-            if (password != null && password.equals(config.getBlog().adminPassword)) {
+            if (password != null && password.equals(cfgPassword)) {
                 String token = AuthFilter.generateToken(password);
-                ctx.json(Map.of("token", token, "status", "ok"));
+                ctx.json(Map.of("token", token, "status", "ok", "passwordEnabled", true));
             } else {
                 ctx.status(401).json(Map.of("error", "Invalid password"));
             }
+        });
+
+        // 查询是否启用密码保护
+        app.get("/api/admin/auth-status", ctx -> {
+            String cfgPassword = config.getBlog().adminPassword;
+            boolean enabled = cfgPassword != null && !cfgPassword.isBlank();
+            ctx.json(Map.of("passwordEnabled", enabled));
         });
 
         // --- Admin: All routes below require auth ---
@@ -1344,10 +1392,16 @@ public class RagApplication {
     private static String resolveAgentPrompt(String agentId) {
         if (agentId != null && !agentId.isBlank()) {
             AgentStore.Agent agent = agentStore.getById(agentId);
-            if (agent != null) return agent.systemPrompt();
+            if (agent != null) {
+                String prompt = PromptRegistry.getTemplate(agent.promptKey());
+                if (prompt != null && !prompt.isBlank()) return prompt;
+            }
         }
         AgentStore.Agent def = agentStore.getById("default");
-        if (def != null) return def.systemPrompt();
+        if (def != null) {
+            String prompt = PromptRegistry.getTemplate(def.promptKey());
+            if (prompt != null && !prompt.isBlank()) return prompt;
+        }
         return null; // RagPromptTemplate will use its own hardcoded default
     }
 
@@ -1670,8 +1724,7 @@ public class RagApplication {
 
             flashcardStore.updateDeckStats(deck.id());
             deck = flashcardStore.getDeck(deck.id());
-            var stats = flashcardStore.getDeckStats(deck.id());
-            ctx.json(Map.of("deck", deck, "cards", cards, "stats", stats));
+            ctx.json(Map.of("deck", deck, "cards", cards));
         });
 
         // List decks
@@ -1686,8 +1739,7 @@ public class RagApplication {
             var deck = flashcardStore.getDeck(id);
             if (deck == null) { ctx.status(404).json(Map.of("error", "Deck not found")); return; }
             var cards = flashcardStore.listCardsByDeck(id);
-            var stats = flashcardStore.getDeckStats(id);
-            ctx.json(Map.of("deck", deck, "cards", cards, "stats", stats));
+            ctx.json(Map.of("deck", deck, "cards", cards));
         });
 
         // Update card
@@ -1718,55 +1770,35 @@ public class RagApplication {
             ctx.json(Map.of("ok", true));
         });
 
-        // Submit review
-        app.post("/api/flashcard/review", ctx -> {
-            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
-            String cardId = body.get("cardId");
-            String grade = body.get("grade");
-            if (cardId == null || grade == null) {
-                ctx.status(400).json(Map.of("error", "cardId and grade are required"));
+        // Import deck from uploaded JSON file
+        app.post("/api/flashcard/import", ctx -> {
+            var body = ctx.bodyAsClass(Map.class);
+            String title = (String) body.getOrDefault("title", "导入卡组");
+            String description = (String) body.getOrDefault("description", "");
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> cardMaps = body.get("cards") instanceof List ? (List<Map<String, Object>>) body.get("cards") : List.of();
+            if (cardMaps.isEmpty()) {
+                ctx.status(400).json(Map.of("error", "卡片列表为空"));
                 return;
             }
-            var card = flashcardStore.updateReview(cardId, grade);
-            if (card == null) { ctx.status(404).json(Map.of("error", "Card not found")); return; }
-            ctx.json(card);
-        });
-
-        // Batch submit reviews
-        app.post("/api/flashcard/review/batch", ctx -> {
-            List<Map<String, String>> items = MAPPER.readValue(ctx.body(),
-                    new com.fasterxml.jackson.core.type.TypeReference<List<Map<String, String>>>() {});
-            int updated = 0;
-            for (var item : items) {
-                String cardId = item.get("cardId");
-                String grade = item.get("grade");
-                if (cardId != null && grade != null) {
-                    flashcardStore.updateReview(cardId, grade);
-                    updated++;
-                }
+            List<com.example.rag.flashcard.FlashcardStore.Card> cards = new ArrayList<>();
+            for (var cm : cardMaps) {
+                String front = (String) cm.getOrDefault("front", "");
+                String back = (String) cm.getOrDefault("back", "");
+                @SuppressWarnings("unchecked")
+                List<String> tags = cm.get("tags") instanceof List ? (List<String>) cm.get("tags") : List.of();
+                int diff = cm.get("difficulty") instanceof Number ? ((Number) cm.get("difficulty")).intValue() : 2;
+                cards.add(new com.example.rag.flashcard.FlashcardStore.Card("", "", front, back, tags, diff, 0, 0));
             }
-            ctx.json(Map.of("updated", updated));
-        });
-
-        // Get due cards for study
-        app.get("/api/flashcard/study/{deckId}", ctx -> {
-            String deckId = ctx.pathParam("deckId");
-            String mode = ctx.queryParam("mode");
-            List<com.example.rag.flashcard.FlashcardStore.Card> cards;
-            if ("all".equals(mode)) {
-                cards = flashcardStore.getAllCardsShuffled(deckId);
-            } else {
-                cards = flashcardStore.getDueCards(deckId);
+            var deck = flashcardStore.importFromJson(title, description, cards);
+            if (deck == null) {
+                ctx.status(500).json(Map.of("error", "导入失败"));
+                return;
             }
-            ctx.json(cards);
+            ctx.json(deck);
         });
 
-        // Overall stats
-        app.get("/api/flashcard/stats", ctx -> {
-            ctx.json(flashcardStore.getOverallStats());
-        });
-
-        // Export deck as printable HTML
+        // Export deck as PDF
         app.get("/api/flashcard/decks/{id}/export", ctx -> {
             String id = ctx.pathParam("id");
             var deck = flashcardStore.getDeck(id);
@@ -1774,50 +1806,262 @@ public class RagApplication {
             var cards = flashcardStore.listCardsByDeck(id);
             if (cards.isEmpty()) { ctx.status(400).json(Map.of("error", "No cards to export")); return; }
 
-            StringBuilder html = new StringBuilder();
-            html.append("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
-            html.append("<title>").append(escapeHtml(deck.title())).append(" - 闪卡</title>");
-            html.append("<style>");
-            html.append("body{font-family:'Microsoft YaHei','SimSun','Noto Sans SC',sans-serif;max-width:800px;margin:0 auto;padding:20px;color:#3D3028}");
-            html.append("h1{font-size:20px;border-bottom:2px solid #D97B2B;padding-bottom:8px}");
-            html.append(".card{page-break-inside:avoid;margin:16px 0;border:1px solid #E8DDD0;border-radius:8px;overflow:hidden}");
-            html.append(".card-front{padding:14px 16px;background:#fff;border-bottom:1px dashed #E8DDD0}");
-            html.append(".card-back{padding:14px 16px;background:#FFF9F0}");
-            html.append(".card-label{font-size:11px;font-weight:600;margin-bottom:6px}");
-            html.append(".label-q{color:#D97B2B}.label-a{color:#16a34a}");
-            html.append(".card-text{font-size:14px;line-height:1.6}");
-            html.append(".tags{margin-top:6px;display:flex;gap:4px;flex-wrap:wrap}");
-            html.append(".tag{font-size:11px;background:#F0E8DD;color:#8B7E74;padding:1px 6px;border-radius:3px}");
-            html.append("@media print{body{padding:0}.card{margin:8px 0}}");
-            html.append("</style></head><body>");
-            html.append("<h1>").append(escapeHtml(deck.title())).append("</h1>");
-            html.append("<p style='color:#B8A898;font-size:13px'>").append(cards.size()).append(" 张卡片");
-            if (deck.sourceFile() != null) html.append(" · 来源: ").append(escapeHtml(deck.sourceFile()));
-            html.append("</p>");
+            byte[] pdfBytes = generateFlashcardPdf(deck.title(), deck.sourceFile(), cards);
+            String safeName = deck.title().replaceAll("[\\\\/:*?\"<>|]", "_");
+            String encodedName = java.net.URLEncoder.encode(safeName, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
 
-            for (int i = 0; i < cards.size(); i++) {
-                var card = cards.get(i);
-                html.append("<div class='card'>");
-                html.append("<div class='card-front'>");
-                html.append("<div class='card-label label-q'>Q #").append(i + 1).append("</div>");
-                html.append("<div class='card-text'>").append(escapeHtml(card.front())).append("</div>");
-                html.append("</div>");
-                html.append("<div class='card-back'>");
-                html.append("<div class='card-label label-a'>A</div>");
-                html.append("<div class='card-text'>").append(escapeHtml(card.back())).append("</div>");
-                if (!card.tags().isEmpty()) {
-                    html.append("<div class='tags'>");
-                    for (String tag : card.tags()) html.append("<span class='tag'>").append(escapeHtml(tag)).append("</span>");
-                    html.append("</div>");
-                }
-                html.append("</div></div>");
-            }
-            html.append("</body></html>");
-
-            ctx.contentType("text/html; charset=utf-8");
-            ctx.header("Content-Disposition", "inline; filename=\"flashcards-" + escapeHtml(deck.title()) + ".html\"");
-            ctx.result(html.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            ctx.contentType("application/pdf");
+            ctx.header("Content-Disposition", "attachment; filename=\"flashcards.pdf\"; filename*=UTF-8''" + encodedName + ".pdf");
+            ctx.result(pdfBytes);
         });
+    }
+
+    private static byte[] generateFlashcardPdf(String title, String sourceFile, List<?> cards) throws IOException {
+        try (PDDocument doc = new PDDocument()) {
+            PDFont font = loadCJKFont(doc);
+            PDFont boldFont = loadCJKBoldFont(doc);
+
+            float margin = 55;
+            float pageWidth = PDRectangle.A4.getWidth();
+            float pageHeight = PDRectangle.A4.getHeight();
+            float contentWidth = pageWidth - margin * 2;
+            float bodySize = 10.5f;
+            float bodyLineH = bodySize * 1.75f;
+            float labelSize = 9f;
+            float labelLineH = labelSize * 1.5f;
+
+            PDPage page = new PDPage(PDRectangle.A4);
+            PDPageContentStream cs = new PDPageContentStream(doc, page);
+            float y = pageHeight - margin;
+
+            // ── Cover area ──
+            // Orange accent bar on left
+            cs.setNonStrokingColor(Color.decode("#D97B2B"));
+            cs.addRect(margin - 16, pageHeight - margin - 6, 4, 42);
+            cs.fill();
+
+            // Title
+            cs.beginText();
+            cs.setFont(boldFont, 20f);
+            cs.setNonStrokingColor(Color.decode("#2D2520"));
+            cs.newLineAtOffset(margin, pageHeight - margin + 8);
+            cs.showText(title);
+            cs.endText();
+            y = pageHeight - margin - 16;
+
+            // Subtitle
+            cs.beginText();
+            cs.setFont(font, 9.5f);
+            cs.setNonStrokingColor(Color.decode("#8B7E74"));
+            cs.newLineAtOffset(margin, y);
+            String subtitle = cards.size() + " 张闪卡";
+            if (sourceFile != null && !sourceFile.isBlank()) subtitle += "  ·  " + sourceFile;
+            cs.showText(subtitle);
+            cs.endText();
+            y -= 10;
+
+            // Title underline
+            cs.setStrokingColor(Color.decode("#D97B2B"));
+            cs.setLineWidth(1.2f);
+            cs.moveTo(margin, y);
+            cs.lineTo(pageWidth - margin, y);
+            cs.stroke();
+            y -= 22;
+
+            // ── Cards ──
+            for (int i = 0; i < cards.size(); i++) {
+                var card = (com.example.rag.flashcard.FlashcardStore.Card) cards.get(i);
+                String question = card.front();
+                String answer = card.back();
+
+                float qH = estimateTextHeight(font, bodySize, question, contentWidth, bodyLineH);
+                float aH = estimateTextHeight(font, bodySize, answer, contentWidth, bodyLineH);
+                float tagsH = (!card.tags().isEmpty()) ? labelLineH + 4 : 0;
+                // label + gap + text + gap + separator + gap + label + gap + text + tags + bottom padding
+                float cardH = labelLineH + 4 + qH + 8 + aH + tagsH + 6;
+
+                // New page if needed
+                if (y - cardH < margin + 20) {
+                    cs.close();
+                    doc.addPage(page);
+                    page = new PDPage(PDRectangle.A4);
+                    cs = new PDPageContentStream(doc, page);
+                    y = pageHeight - margin;
+                }
+
+                // ── Card background ──
+                float cardTop = y + 4;
+                float cardBottom = y - cardH + 10;
+                // Light warm background
+                cs.setNonStrokingColor(Color.decode("#FDF9F3"));
+                cs.addRect(margin - 8, cardBottom, contentWidth + 16, cardTop - cardBottom);
+                cs.fill();
+                // Left accent stripe
+                cs.setNonStrokingColor(Color.decode("#D97B2B"));
+                cs.addRect(margin - 8, cardBottom, 3, cardTop - cardBottom);
+                cs.fill();
+
+                // ── Question ──
+                cs.beginText();
+                cs.setFont(boldFont, labelSize);
+                cs.setNonStrokingColor(Color.decode("#D97B2B"));
+                cs.newLineAtOffset(margin + 2, y);
+                cs.showText("Q " + (i + 1));
+                cs.endText();
+                y -= labelLineH + 3;
+
+                y = drawWrappedText(cs, font, bodySize, Color.decode("#2D2520"), question, margin + 2, y, contentWidth - 4, bodyLineH);
+                y -= 6;
+
+                // ── Thin divider ──
+                cs.setStrokingColor(Color.decode("#E8DDD0"));
+                cs.setLineWidth(0.4f);
+                cs.moveTo(margin + 6, y + 4);
+                cs.lineTo(margin + 40, y + 4);
+                cs.stroke();
+                y -= 2;
+
+                // ── Answer ──
+                cs.beginText();
+                cs.setFont(boldFont, labelSize);
+                cs.setNonStrokingColor(Color.decode("#2D8659"));
+                cs.newLineAtOffset(margin + 2, y);
+                cs.showText("A");
+                cs.endText();
+                y -= labelLineH + 3;
+
+                y = drawWrappedText(cs, font, bodySize, Color.decode("#3D3028"), answer, margin + 2, y, contentWidth - 4, bodyLineH);
+
+                // ── Tags ──
+                if (!card.tags().isEmpty()) {
+                    y -= 4;
+                    cs.beginText();
+                    cs.setFont(font, 7.5f);
+                    cs.setNonStrokingColor(Color.decode("#8B7E74"));
+                    cs.newLineAtOffset(margin + 2, y);
+                    cs.showText(String.join("   ·   ", card.tags()));
+                    cs.endText();
+                }
+
+                y -= 18;
+            }
+
+            // ── Footer on last page ──
+            if (y > margin + 30) {
+                cs.setStrokingColor(Color.decode("#E8DDD0"));
+                cs.setLineWidth(0.3f);
+                cs.moveTo(margin, y + 8);
+                cs.lineTo(pageWidth - margin, y + 8);
+                cs.stroke();
+                cs.beginText();
+                cs.setFont(font, 7.5f);
+                cs.setNonStrokingColor(Color.decode("#B8A898"));
+                cs.newLineAtOffset(margin, y);
+                cs.showText("文枢 · 藏书阁  WenShu  |  " + java.time.LocalDate.now());
+                cs.endText();
+            }
+
+            cs.close();
+            doc.addPage(page);
+
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            doc.save(baos);
+            return baos.toByteArray();
+        }
+    }
+
+    private static PDFont loadCJKFont(PDDocument doc) {
+        // Prefer .ttf over .ttc to avoid FontBox TTC parser warnings
+        String[] fontPaths = {
+            "C:/Windows/Fonts/simhei.ttf",   // SimHei (standalone .ttf, no warning)
+            "C:/Windows/Fonts/msyh.ttc",     // Microsoft YaHei (.ttc, may warn)
+            "C:/Windows/Fonts/simsun.ttc",   // SimSun (.ttc)
+            "/System/Library/Fonts/PingFang.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        };
+        for (String path : fontPaths) {
+            try { return PDType0Font.load(doc, new java.io.File(path)); }
+            catch (Exception ignored) {}
+        }
+        try { return PDType0Font.load(doc, new java.io.File("C:/Windows/Fonts/arial.ttf")); }
+        catch (Exception ignored) { return org.apache.pdfbox.pdmodel.font.PDType1Font.HELVETICA; }
+    }
+
+    private static PDFont loadCJKBoldFont(PDDocument doc) {
+        String[] fontPaths = {
+            "C:/Windows/Fonts/simhei.ttf",   // SimHei (inherently bold, .ttf)
+            "C:/Windows/Fonts/msyhbd.ttc",   // YaHei Bold (.ttc)
+            "C:/Windows/Fonts/msyh.ttc",     // YaHei regular
+            "/System/Library/Fonts/PingFang.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        };
+        for (String path : fontPaths) {
+            try { return PDType0Font.load(doc, new java.io.File(path)); }
+            catch (Exception ignored) {}
+        }
+        return loadCJKFont(doc);
+    }
+
+    private static float drawWrappedText(PDPageContentStream cs, PDFont font, float fontSize,
+                                          Color color, String text, float x, float y,
+                                          float maxWidth, float lineHeight) throws IOException {
+        // Split by explicit newlines first (from \n\n separator in card back)
+        String[] paragraphs = text.split("\\n\\n|\\n");
+        boolean first = true;
+        for (String para : paragraphs) {
+            if (!first) { y -= lineHeight * 0.5f; } // extra gap between paragraphs
+            first = false;
+            y = drawSingleParagraph(cs, font, fontSize, color, para, x, y, maxWidth, lineHeight);
+        }
+        return y;
+    }
+
+    private static float drawSingleParagraph(PDPageContentStream cs, PDFont font, float fontSize,
+                                              Color color, String text, float x, float y,
+                                              float maxWidth, float lineHeight) throws IOException {
+        cs.beginText();
+        cs.setFont(font, fontSize);
+        cs.setNonStrokingColor(color);
+        cs.newLineAtOffset(x, y);
+
+        StringBuilder line = new StringBuilder();
+        for (String word : text.split("(?<=\\s)|(?=[\\s])|(?<=[\\u4e00-\\u9fff])|(?=[\\u4e00-\\u9fff])")) {
+            if (word.isEmpty()) continue;
+            String test = line.toString() + word;
+            float width;
+            try { width = font.getStringWidth(test) / 1000f * fontSize; }
+            catch (Exception e) { width = test.length() * fontSize * 0.6f; }
+
+            if (width > maxWidth && line.length() > 0) {
+                cs.showText(line.toString());
+                y -= lineHeight;
+                cs.newLineAtOffset(0, -lineHeight);
+                line = new StringBuilder(word.trim());
+            } else {
+                line.append(word);
+            }
+        }
+        if (line.length() > 0) {
+            cs.showText(line.toString());
+            y -= lineHeight;
+        }
+        cs.endText();
+        return y;
+    }
+
+    private static float estimateTextHeight(PDFont font, float fontSize, String text,
+                                             float maxWidth, float lineHeight) {
+        String[] paragraphs = text.split("\\n\\n|\\n");
+        float total = 0;
+        for (String para : paragraphs) {
+            float w;
+            try { w = font.getStringWidth(para) / 1000f * fontSize; }
+            catch (Exception e) { w = para.length() * fontSize * 0.6f; }
+            total += Math.max(1, (int) Math.ceil(w / maxWidth)) * lineHeight;
+        }
+        // Extra spacing between paragraphs
+        total += (paragraphs.length - 1) * lineHeight * 0.5f;
+        return total;
     }
 
     private static String escapeHtml(String s) {

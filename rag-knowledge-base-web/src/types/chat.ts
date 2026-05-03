@@ -50,6 +50,7 @@ export interface Agent {
   name: string
   description: string
   systemPrompt: string
+  promptKey: string
   avatar: string
   isDefault: boolean
   createdAt: number
@@ -117,9 +118,14 @@ export interface AppSettings {
   vectorStore: VectorStoreConfig
   rag: RagConfig
   a2a: A2AAppConfig
+  blog?: BlogConfig
   documentTypes?: DocumentTypeConfig[]
   webSearch?: WebSearchConfig
   prompts?: Record<string, PromptEntry>
+}
+
+export interface BlogConfig {
+  adminPassword: string
 }
 
 export interface PromptEntry {

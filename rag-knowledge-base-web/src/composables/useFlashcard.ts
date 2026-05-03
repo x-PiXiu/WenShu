@@ -1,9 +1,8 @@
 import { ref } from 'vue'
-import type { Deck, Card, DeckStats, DeckDetail, Difficulty, ReviewGrade } from '../types/flashcard'
+import type { Deck, Card, DeckDetail, Difficulty } from '../types/flashcard'
 
 export function useFlashcard() {
   const decks = ref<Deck[]>([])
-  const stats = ref<DeckStats | null>(null)
   const loading = ref(false)
 
   async function generateFromFile(file: File, cardCount: number, difficulty: Difficulty): Promise<DeckDetail | null> {
@@ -83,67 +82,75 @@ export function useFlashcard() {
     } catch { return false }
   }
 
-  async function submitReview(cardId: string, grade: ReviewGrade): Promise<Card | null> {
+  async function exportDeckPdf(deckId: string): Promise<void> {
     try {
-      const res = await fetch('/api/flashcard/review', {
+      const res = await fetch(`/api/flashcard/decks/${deckId}/export`)
+      if (!res.ok) return
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition') || ''
+      const match = disposition.match(/filename="?(.+?)"?$/)
+      const filename = match ? match[1] : `flashcards-${deckId}.pdf`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch { /* ignore */ }
+  }
+
+  /** Export deck as JSON file (client-side) */
+  async function exportDeckJson(deckId: string): Promise<boolean> {
+    try {
+      const detail = await getDeck(deckId)
+      if (!detail) return false
+      const exportData = {
+        title: detail.deck.title,
+        description: detail.deck.description,
+        sourceFile: detail.deck.sourceFile,
+        cards: detail.cards.map(c => ({
+          front: c.front,
+          back: c.back,
+          tags: c.tags,
+          difficulty: c.difficulty,
+        })),
+      }
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${detail.deck.title}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      return true
+    } catch { return false }
+  }
+
+  /** Import deck from JSON file */
+  async function importDeckFromFile(file: File): Promise<Deck | null> {
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text)
+      if (!data.cards || !Array.isArray(data.cards) || data.cards.length === 0) return null
+      const res = await fetch('/api/flashcard/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cardId, grade }),
+        body: JSON.stringify({
+          title: data.title || file.name.replace('.json', ''),
+          description: data.description || '',
+          cards: data.cards,
+        }),
       })
       if (!res.ok) return null
       return await res.json()
     } catch { return null }
   }
 
-  async function submitBatchReview(reviews: { cardId: string; grade: ReviewGrade }[]): Promise<number> {
-    if (reviews.length === 0) return 0
-    try {
-      const res = await fetch('/api/flashcard/review/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(reviews),
-      })
-      if (!res.ok) return 0
-      const data = await res.json()
-      return data.updated ?? 0
-    } catch { return 0 }
-  }
-
-  async function getStudyCards(deckId: string, mode: 'due' | 'all' = 'due'): Promise<Card[]> {
-    try {
-      const param = mode === 'all' ? '?mode=all' : ''
-      const res = await fetch(`/api/flashcard/study/${deckId}${param}`)
-      if (res.ok) return await res.json()
-      return []
-    } catch { return [] }
-  }
-
-  async function loadStats(): Promise<void> {
-    try {
-      const res = await fetch('/api/flashcard/stats')
-      if (res.ok) stats.value = await res.json()
-    } catch { /* ignore */ }
-  }
-
-  async function exportDeckPdf(deckId: string): Promise<void> {
-    try {
-      const res = await fetch(`/api/flashcard/decks/${deckId}/export`)
-      if (!res.ok) return
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `flashcards-${deckId}.pdf`
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch { /* ignore */ }
-  }
-
   return {
-    decks, stats, loading,
+    decks, loading,
     generateFromFile, generateFromText,
     loadDecks, getDeck, updateCard,
-    deleteDeck, deleteCard, submitReview, submitBatchReview,
-    getStudyCards, loadStats, exportDeckPdf,
+    deleteDeck, deleteCard, exportDeckPdf,
+    exportDeckJson, importDeckFromFile,
   }
 }

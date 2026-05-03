@@ -274,4 +274,73 @@
     "hit" : true,
     "topScore" : 0.01639344262295082
   } ]
+}, {
+  "timestamp" : "2026-05-03T13:08:24.199807100Z",
+  "totalCases" : 10,
+  "topK" : 5,
+  "hitRate" : 1.0,
+  "avgRecallAtK" : 3.1,
+  "avgPrecisionAtK" : 0.7716666666666667,
+  "mrr" : 0.875,
+  "caseResults" : [ {
+    "id" : "tc-001",
+    "question" : "LangChain4j 是什么",
+    "category" : "概念理解",
+    "hit" : true,
+    "topScore" : 0.03125
+  }, {
+    "id" : "tc-002",
+    "question" : "LangChain4j 和 Spring AI 怎么选",
+    "category" : "技术对比",
+    "hit" : true,
+    "topScore" : 0.03177805800756621
+  }, {
+    "id" : "tc-003",
+    "question" : "怎么跑通第一个AI对话",
+    "category" : "操作指南",
+    "hit" : true,
+    "topScore" : 0.01639344262295082
+  }, {
+    "id" : "tc-004",
+    "question" : "Maven 依赖怎么配置",
+    "category" : "操作指南",
+    "hit" : true,
+    "topScore" : 0.03278688524590164
+  }, {
+    "id" : "tc-005",
+    "question" : "MiniMax API Key 怎么申请",
+    "category" : "操作指南",
+    "hit" : true,
+    "topScore" : 0.03278688524590164
+  }, {
+    "id" : "tc-006",
+    "question" : "报错 api key invalid 怎么办",
+    "category" : "排错",
+    "hit" : true,
+    "topScore" : 0.03252247488101534
+  }, {
+    "id" : "tc-007",
+    "question" : "A2A 协议是什么",
+    "category" : "概念理解",
+    "hit" : true,
+    "topScore" : 0.03200204813108039
+  }, {
+    "id" : "tc-008",
+    "question" : "Java 还能做 AI 应用吗",
+    "category" : "概念理解",
+    "hit" : true,
+    "topScore" : 0.032266458495966696
+  }, {
+    "id" : "tc-009",
+    "question" : "向量数据库怎么选",
+    "category" : "技术对比",
+    "hit" : true,
+    "topScore" : 0.01639344262295082
+  }, {
+    "id" : "tc-010",
+    "question" : "Multi-Agent 架构怎么设计",
+    "category" : "深度分析",
+    "hit" : true,
+    "topScore" : 0.01639344262295082
+  } ]
 } ]

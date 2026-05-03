@@ -186,6 +186,10 @@
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                     LLM 监控
                   </button>
+                  <button :class="['admin-tab-btn', { active: adminTab === 'prompts' }]" @click="adminTab = 'prompts'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    Prompt 管理
+                  </button>
                   <div class="admin-tabs-spacer"></div>
                   <button class="admin-logout-btn" @click="handleLogout">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -224,6 +228,9 @@
                   <template v-if="adminTab === 'llm'">
                     <LlmMonitor />
                   </template>
+                  <template v-if="adminTab === 'prompts'">
+                    <PromptManagePage />
+                  </template>
                 </div>
               </div>
             </template>
@@ -255,6 +262,7 @@ import MediaManager from './components/admin/MediaManager.vue'
 import MemoryManager from './components/admin/MemoryManager.vue'
 import EvalDashboard from './components/admin/EvalDashboard.vue'
 import LlmMonitor from './components/admin/LlmMonitor.vue'
+import PromptManagePage from './components/PromptManagePage.vue'
 import FlashcardPage from './components/flashcard/FlashcardPage.vue'
 import DeckDetail from './components/flashcard/DeckDetail.vue'
 import StudyMode from './components/flashcard/StudyMode.vue'
@@ -291,7 +299,7 @@ const { fetchStats } = useSettings()
 const { conversations, currentConversationId, loadConversations, createConversation, switchConversation, deleteConversation } = useChat()
 const { loadAgents } = useAgents()
 const { getPost } = useBlog()
-const { isLoggedIn, login, logout } = useAdmin()
+const { isLoggedIn, login, loginNoPassword, checkAuthStatus, passwordEnabled, logout } = useAdmin()
 const stats = ref<Stats | null>(null)
 
 const currentArticle = ref<Article | null>(null)
@@ -312,7 +320,7 @@ const pageTitle = computed(() => {
     case 'a2a': return '文枢 · A2A 节点'
     case 'flashcard': return '文枢 · 闪卡'
     case 'flashcard-detail': return '闪卡详情'
-    case 'flashcard-study': return '学习模式'
+    case 'flashcard-study': return '翻看卡片'
     case 'admin':
     case 'admin-posts':
       switch (adminTab.value) {
@@ -346,7 +354,21 @@ function handleAdminClick() {
     currentPage.value = 'admin'
     adminTab.value = 'posts'
   } else {
-    currentPage.value = 'admin-login'
+    // 检查是否需要密码，无密码则自动登录
+    checkAuthStatus().then(enabled => {
+      if (!enabled) {
+        loginNoPassword().then(ok => {
+          if (ok) {
+            currentPage.value = 'admin'
+            adminTab.value = 'posts'
+          } else {
+            currentPage.value = 'admin-login'
+          }
+        })
+      } else {
+        currentPage.value = 'admin-login'
+      }
+    })
   }
 }
 

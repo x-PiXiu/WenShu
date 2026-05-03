@@ -56,6 +56,38 @@ async function ensureOk(res: Response): Promise<boolean> {
 
 export function useAdmin() {
 
+  const passwordEnabled = ref(true)
+
+  async function checkAuthStatus(): Promise<boolean> {
+    try {
+      const res = await fetch('/api/admin/auth-status')
+      if (res.ok) {
+        const data = await res.json()
+        passwordEnabled.value = data.passwordEnabled !== false
+        return passwordEnabled.value
+      }
+    } catch { /* ignore */ }
+    return true
+  }
+
+  async function loginNoPassword(): Promise<boolean> {
+    try {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        adminToken.value = data.token
+        localStorage.setItem('adminToken', data.token)
+        isLoggedIn.value = true
+        return true
+      }
+      return false
+    } catch { return false }
+  }
+
   async function login(password: string): Promise<boolean> {
     try {
       const res = await fetch('/api/admin/login', {
@@ -187,9 +219,9 @@ export function useAdmin() {
   }
 
   return {
-    adminToken, isLoggedIn,
+    adminToken, isLoggedIn, passwordEnabled,
     authHeaders,
-    login, logout,
+    login, loginNoPassword, checkAuthStatus, logout,
     listAllPosts, createPost, updatePost, deletePost, publishPost, unpublishPost,
     createCategory, updateCategory, deleteCategory,
   }

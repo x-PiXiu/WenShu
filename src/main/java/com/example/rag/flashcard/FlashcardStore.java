@@ -9,9 +9,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * 闪卡数据持久化：SQLite 存储 Deck + Card，支持间隔重复查询
- */
 public class FlashcardStore {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -34,7 +31,6 @@ public class FlashcardStore {
                     description TEXT,
                     source_file TEXT,
                     card_count INTEGER NOT NULL DEFAULT 0,
-                    mastered_count INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 )
@@ -47,18 +43,12 @@ public class FlashcardStore {
                     back TEXT NOT NULL,
                     tags TEXT,
                     difficulty INTEGER NOT NULL DEFAULT 2,
-                    review_count INTEGER NOT NULL DEFAULT 0,
-                    correct_count INTEGER NOT NULL DEFAULT 0,
-                    interval_days REAL NOT NULL DEFAULT 1.0,
-                    next_review_at INTEGER,
-                    last_reviewed_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     FOREIGN KEY (deck_id) REFERENCES fc_deck(id) ON DELETE CASCADE
                 )
             """);
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_fc_card_deck ON fc_card(deck_id)");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_fc_card_next_review ON fc_card(next_review_at)");
         } catch (SQLException e) {
             throw new RuntimeException("Failed to init flashcard tables: " + e.getMessage(), e);
         }
@@ -71,7 +61,7 @@ public class FlashcardStore {
         long now = System.currentTimeMillis();
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
-                     "INSERT INTO fc_deck (id, title, description, source_file, card_count, mastered_count, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0, ?, ?)")) {
+                     "INSERT INTO fc_deck (id, title, description, source_file, card_count, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)")) {
             ps.setString(1, id);
             ps.setString(2, title);
             ps.setString(3, description);
@@ -82,7 +72,7 @@ public class FlashcardStore {
         } catch (SQLException e) {
             throw new RuntimeException("Failed to create deck: " + e.getMessage(), e);
         }
-        return new Deck(id, title, description, sourceFile, 0, 0, now, now);
+        return new Deck(id, title, description, sourceFile, 0, now, now);
     }
 
     public Deck getDeck(String id) {
@@ -128,23 +118,18 @@ public class FlashcardStore {
 
     public void updateDeckStats(String deckId) {
         try (Connection conn = getConnection()) {
-            int total = 0, mastered = 0;
-            try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) as total, " +
-                    "SUM(CASE WHEN interval_days >= 14 THEN 1 ELSE 0 END) as mastered FROM fc_card WHERE deck_id = ?")) {
+            int total = 0;
+            try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) as total FROM fc_card WHERE deck_id = ?")) {
                 ps.setString(1, deckId);
                 try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        total = rs.getInt("total");
-                        mastered = rs.getInt("mastered");
-                    }
+                    if (rs.next()) total = rs.getInt("total");
                 }
             }
             try (PreparedStatement ps = conn.prepareStatement(
-                    "UPDATE fc_deck SET card_count = ?, mastered_count = ?, updated_at = ? WHERE id = ?")) {
+                    "UPDATE fc_deck SET card_count = ?, updated_at = ? WHERE id = ?")) {
                 ps.setInt(1, total);
-                ps.setInt(2, mastered);
-                ps.setLong(3, System.currentTimeMillis());
-                ps.setString(4, deckId);
+                ps.setLong(2, System.currentTimeMillis());
+                ps.setString(3, deckId);
                 ps.executeUpdate();
             }
         } catch (SQLException ignored) {}
@@ -158,9 +143,8 @@ public class FlashcardStore {
         String tagsJson = serializeTags(tags);
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
-                     "INSERT INTO fc_card (id, deck_id, front, back, tags, difficulty, review_count, correct_count, " +
-                             "interval_days, next_review_at, last_reviewed_at, created_at, updated_at) " +
-                             "VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1.0, NULL, NULL, ?, ?)")) {
+                     "INSERT INTO fc_card (id, deck_id, front, back, tags, difficulty, created_at, updated_at) " +
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
             ps.setString(1, id);
             ps.setString(2, deckId);
             ps.setString(3, front);
@@ -173,7 +157,7 @@ public class FlashcardStore {
         } catch (SQLException e) {
             System.err.println("[WARN] Failed to create card: " + e.getMessage());
         }
-        return new Card(id, deckId, front, back, tags, difficulty, 0, 0, 1.0, null, null, now, now);
+        return new Card(id, deckId, front, back, tags, difficulty, now, now);
     }
 
     public Card getCard(String id) {
@@ -229,113 +213,15 @@ public class FlashcardStore {
         } catch (SQLException ignored) {}
     }
 
-    // ===== Spaced Repetition =====
+    // ===== Import from JSON =====
 
-    /** Get all cards in random order — for "re-study all" mode */
-    public List<Card> getAllCardsShuffled(String deckId) {
-        List<Card> result = new ArrayList<>();
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT * FROM fc_card WHERE deck_id = ? ORDER BY RANDOM()")) {
-            ps.setString(1, deckId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) result.add(mapCard(rs));
-            }
-        } catch (SQLException e) {
-            System.err.println("[ERROR] getAllCardsShuffled failed for deck " + deckId + ": " + e.getMessage());
+    public Deck importFromJson(String title, String description, List<Card> cards) {
+        Deck newDeck = createDeck(title, description, "导入");
+        for (Card card : cards) {
+            createCard(newDeck.id(), card.front(), card.back(), card.tags(), card.difficulty());
         }
-        return result;
-    }
-
-    public List<Card> getDueCards(String deckId) {
-        List<Card> result = new ArrayList<>();
-        long now = System.currentTimeMillis();
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT * FROM fc_card WHERE deck_id = ? AND (next_review_at IS NULL OR next_review_at <= ?) ORDER BY RANDOM()")) {
-            ps.setString(1, deckId);
-            ps.setLong(2, now);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) result.add(mapCard(rs));
-            }
-        } catch (SQLException e) {
-            System.err.println("[ERROR] getDueCards failed for deck " + deckId + ": " + e.getMessage());
-        }
-        return result;
-    }
-
-    public Card updateReview(String cardId, String grade) {
-        Card card = getCard(cardId);
-        if (card == null) return null;
-
-        var result = Sm2Scheduler.nextInterval(card.intervalDays, grade);
-        long now = System.currentTimeMillis();
-        boolean correct = "remembered".equals(grade);
-
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE fc_card SET interval_days = ?, next_review_at = ?, last_reviewed_at = ?, " +
-                             "review_count = review_count + 1, correct_count = correct_count + ?, updated_at = ? WHERE id = ?")) {
-            ps.setDouble(1, result.intervalDays());
-            ps.setLong(2, result.nextReviewAt());
-            ps.setLong(3, now);
-            ps.setInt(4, correct ? 1 : 0);
-            ps.setLong(5, now);
-            ps.setString(6, cardId);
-            ps.executeUpdate();
-        } catch (SQLException ignored) {}
-
-        // Refresh deck stats
-        updateDeckStats(card.deckId);
-
-        return getCard(cardId);
-    }
-
-    // ===== Statistics =====
-
-    public DeckStats getDeckStats(String deckId) {
-        long now = System.currentTimeMillis();
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(
-                     "SELECT COUNT(*) as total, " +
-                             "SUM(CASE WHEN interval_days >= 14 THEN 1 ELSE 0 END) as mastered, " +
-                             "SUM(CASE WHEN interval_days < 21 AND review_count > 0 THEN 1 ELSE 0 END) as learning, " +
-                             "SUM(CASE WHEN next_review_at IS NULL THEN 1 ELSE 0 END) as new_count, " +
-                             "SUM(CASE WHEN next_review_at IS NOT NULL AND next_review_at <= ? THEN 1 ELSE 0 END) as due " +
-                             "FROM fc_card WHERE deck_id = ?")) {
-            ps.setLong(1, now);
-            ps.setString(2, deckId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    int total = rs.getInt("total");
-                    int mastered = rs.getInt("mastered");
-                    int learning = rs.getInt("learning");
-                    int newCount = rs.getInt("new_count");
-                    int due = rs.getInt("due");
-                    return new DeckStats(total, due, mastered, learning, newCount);
-                }
-            }
-        } catch (SQLException ignored) {}
-        return new DeckStats(0, 0, 0, 0, 0);
-    }
-
-    public DeckStats getOverallStats() {
-        long now = System.currentTimeMillis();
-        try (Connection conn = getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(
-                     "SELECT COUNT(*) as total, " +
-                             "SUM(CASE WHEN interval_days >= 14 THEN 1 ELSE 0 END) as mastered, " +
-                             "SUM(CASE WHEN interval_days < 21 AND review_count > 0 THEN 1 ELSE 0 END) as learning, " +
-                             "SUM(CASE WHEN next_review_at IS NULL THEN 1 ELSE 0 END) as new_count, " +
-                             "SUM(CASE WHEN next_review_at IS NOT NULL AND next_review_at <= " + now + " THEN 1 ELSE 0 END) as due " +
-                             "FROM fc_card")) {
-            if (rs.next()) {
-                return new DeckStats(rs.getInt("total"), rs.getInt("due"),
-                        rs.getInt("mastered"), rs.getInt("learning"), rs.getInt("new_count"));
-            }
-        } catch (SQLException ignored) {}
-        return new DeckStats(0, 0, 0, 0, 0);
+        updateDeckStats(newDeck.id());
+        return getDeck(newDeck.id());
     }
 
     // ===== Mapping =====
@@ -343,23 +229,17 @@ public class FlashcardStore {
     private Deck mapDeck(ResultSet rs) throws SQLException {
         return new Deck(
                 rs.getString("id"), rs.getString("title"), rs.getString("description"),
-                rs.getString("source_file"), rs.getInt("card_count"), rs.getInt("mastered_count"),
+                rs.getString("source_file"), rs.getInt("card_count"),
                 rs.getLong("created_at"), rs.getLong("updated_at")
         );
     }
 
     private Card mapCard(ResultSet rs) throws SQLException {
-        long nextReviewRaw = rs.getLong("next_review_at");
-        Long nextReviewAt = rs.wasNull() ? null : nextReviewRaw;
-        long lastReviewedRaw = rs.getLong("last_reviewed_at");
-        Long lastReviewedAt = rs.wasNull() ? null : lastReviewedRaw;
         return new Card(
                 rs.getString("id"), rs.getString("deck_id"),
                 rs.getString("front"), rs.getString("back"),
                 deserializeTags(rs.getString("tags")),
-                rs.getInt("difficulty"), rs.getInt("review_count"), rs.getInt("correct_count"),
-                rs.getDouble("interval_days"),
-                nextReviewAt, lastReviewedAt,
+                rs.getInt("difficulty"),
                 rs.getLong("created_at"), rs.getLong("updated_at")
         );
     }
@@ -384,15 +264,10 @@ public class FlashcardStore {
     // ===== Records =====
 
     public record Deck(String id, String title, String description,
-                       String sourceFile, int cardCount, int masteredCount,
+                       String sourceFile, int cardCount,
                        long createdAt, long updatedAt) {}
 
     public record Card(String id, String deckId, String front, String back,
-                       List<String> tags, int difficulty, int reviewCount,
-                       int correctCount, double intervalDays,
-                       Long nextReviewAt, Long lastReviewedAt,
+                       List<String> tags, int difficulty,
                        long createdAt, long updatedAt) {}
-
-    public record DeckStats(int totalCards, int dueToday, int masteredCount,
-                            int learningCount, int newCount) {}
 }

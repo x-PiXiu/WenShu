@@ -13,12 +13,10 @@
             <h2 class="section-title">{{ detail.deck.title }}</h2>
             <div class="fc-detail-meta">
               <span v-if="detail.deck.sourceFile">来源: {{ detail.deck.sourceFile }}</span>
-              <span>{{ detail.stats.totalCards }} 张卡片</span>
-              <span>掌握 {{ detail.stats.masteredCount }}</span>
-              <span>待复习 {{ detail.stats.dueToday }}</span>
+              <span>{{ detail.cards.length }} 张卡片</span>
             </div>
           </div>
-          <button class="fc-study-btn-lg" @click="$emit('study', detail.deck.id)">开始学习</button>
+          <button class="fc-study-btn-lg" @click="$emit('study', detail.deck.id)">翻看卡片</button>
         </div>
 
         <div class="fc-card-list">
@@ -44,7 +42,6 @@
                   <span class="fc-diff-badge" :class="'diff-' + card.difficulty">
                     {{ card.difficulty === 1 ? '基础' : card.difficulty === 3 ? '高级' : '中级' }}
                   </span>
-                  <span class="fc-card-stats">复习 {{ card.reviewCount }} 次</span>
                 </div>
               </template>
             </div>
@@ -130,7 +127,6 @@ onMounted(async () => { detail.value = await getDeck(props.deckId) })
 .diff-1 { background: #DCFCE7; color: #16a34a; }
 .diff-2 { background: #FEF3C7; color: #CA8A04; }
 .diff-3 { background: #FEE2E2; color: #DC2626; }
-.fc-card-stats { font-size: 11px; color: #C8B8A8; }
 
 .fc-edit-area { width: 100%; border: 1px solid #E8DDD0; border-radius: 6px; padding: 6px 8px; font-size: 13px; margin-bottom: 6px; outline: none; resize: vertical; }
 .fc-edit-area:focus { border-color: #D97B2B; }
