@@ -1,0 +1,54 @@
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0 http://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <id>release</id>
+    <formats>
+        <format>zip</format>
+        <format>tar.gz</format>
+    </formats>
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>wenshu</baseDirectory>
+
+    <files>
+        <!-- Fat JAR renamed to wenshu.jar -->
+        <file>
+            <source>target/rag-knowledge-base-1.0-SNAPSHOT.jar</source>
+            <outputDirectory>/</outputDirectory>
+            <destName>wenshu.jar</destName>
+        </file>
+        <!-- Config template -->
+        <file>
+            <source>config.example.json</source>
+            <outputDirectory>/</outputDirectory>
+        </file>
+        <!-- Launch scripts -->
+        <file>
+            <source>start.bat</source>
+            <outputDirectory>/</outputDirectory>
+        </file>
+        <file>
+            <source>start.sh</source>
+            <outputDirectory>/</outputDirectory>
+            <fileMode>0755</fileMode>
+        </file>
+    </files>
+
+    <fileSets>
+        <!-- Frontend static files (if built) -->
+        <fileSet>
+            <directory>static</directory>
+            <outputDirectory>static</outputDirectory>
+            <includes>
+                <include>**/*</include>
+            </includes>
+        </fileSet>
+        <!-- Knowledge directory (empty, for user docs) -->
+        <fileSet>
+            <directory>knowledge</directory>
+            <outputDirectory>knowledge</outputDirectory>
+            <excludes>
+                <exclude>**/*</exclude>
+            </excludes>
+        </fileSet>
+    </fileSets>
+</assembly>

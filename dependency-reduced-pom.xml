@@ -13,6 +13,7 @@
           <source>17</source>
           <target>17</target>
           <encoding>UTF-8</encoding>
+          <parameters>true</parameters>
         </configuration>
       </plugin>
       <plugin>
@@ -44,6 +45,25 @@
                   </excludes>
                 </filter>
               </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <version>3.7.1</version>
+        <executions>
+          <execution>
+            <id>make-release</id>
+            <phase>package</phase>
+            <goals>
+              <goal>single</goal>
+            </goals>
+            <configuration>
+              <descriptors>
+                <descriptor>src/main/assembly/release.xml</descriptor>
+              </descriptors>
+              <attach>false</attach>
             </configuration>
           </execution>
         </executions>

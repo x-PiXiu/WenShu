@@ -187,7 +187,39 @@
 | Node.js | 18+ | 前端构建工具（仅开发/构建时需要） |
 | npm | 9+ | 前端包管理 |
 
-### 部署方式一：一体化部署（推荐）
+### 部署方式一：下载即用（推荐）
+
+从 [Releases](https://github.com/CAH1314/WenShu/releases) 下载最新的 `wenshu-release.zip`，解压后即可使用。
+
+#### 1. 环境要求
+
+仅需 JDK 17+（[下载 Adoptium](https://adoptium.net/)），无需 Maven、Node.js 等构建工具。
+
+#### 2. 启动
+
+```bash
+# 解压
+unzip wenshu-release.zip
+cd wenshu
+
+# 首次启动会自动创建 config.json（从模板复制），请编辑填入 API Key
+./start.sh        # Linux / macOS
+start.bat         # Windows 双击即可
+```
+
+编辑 `config.json` 填入 LLM 和 Embedding 的 API Key 后再次启动：
+
+```bash
+./start.sh
+```
+
+浏览器访问 `http://localhost:8081` 即可使用。
+
+> **Windows 用户**：双击 `start.bat`，首次会自动打开配置文件编辑器。
+
+---
+
+### 部署方式二：从源码构建
 
 前端构建后嵌入后端，只需运行一个 Java 进程。
 
@@ -262,9 +294,11 @@ java -jar target/rag-knowledge-base-1.0-SNAPSHOT.jar
 
 浏览器访问 `http://localhost:8081` 即可使用。
 
+> **打包发布**：开发者可通过 `mvn clean package -DskipTests` 一键生成发布包（zip/tar.gz），产物在 `target/` 目录下。
+
 ---
 
-### 部署方式二：前后端分离
+### 部署方式三：前后端分离
 
 适合需要独立扩展前端或使用 CDN 加速的场景。
 
@@ -318,7 +352,7 @@ server {
 
 ---
 
-### 开发环境启动
+### 部署方式四：开发环境
 
 需要两个终端窗口：
 
