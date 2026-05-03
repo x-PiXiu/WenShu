@@ -2,6 +2,7 @@ package com.example.rag.tools;
 
 import com.example.rag.chat.ChatStore;
 import com.example.rag.config.AppConfiguration;
+import com.example.rag.prompt.PromptRegistry;
 import com.example.rag.service.MemoryStore;
 import com.example.rag.service.RagService;
 import dev.langchain4j.agent.tool.P;
@@ -221,8 +222,14 @@ public class RagTools {
         try {
             var chatModel = ragService.getChatModel();
             if (chatModel == null) return "LLM 模型不可用";
-            String prompt = "请将以下文本翻译为" + targetLanguage
-                    + "。只输出翻译结果，不要添加任何解释或前缀：\n\n" + text;
+            String tmpl = PromptRegistry.getTemplate("translate");
+            String prompt;
+            if (tmpl != null && !tmpl.isBlank() && tmpl.contains("${targetLanguage}")) {
+                prompt = tmpl.replace("${targetLanguage}", targetLanguage).replace("${text}", text);
+            } else {
+                prompt = "请将以下文本翻译为" + targetLanguage
+                        + "。只输出翻译结果，不要添加任何解释或前缀：\n\n" + text;
+            }
             String result = chatModel.chat(prompt);
             return RagService.stripThinkTags(result);
         } catch (Exception e) {
@@ -258,7 +265,9 @@ public class RagTools {
                 String text = r.text().length() > 300 ? r.text().substring(0, 300) + "..." : r.text();
                 sb.append(text).append("\n\n");
             }
-            sb.append("请基于以上两份文档内容，分析它们的异同点。");
+            String compareSuffix = PromptRegistry.getTemplate("document_compare");
+            sb.append(compareSuffix != null && !compareSuffix.isBlank()
+                    ? compareSuffix : "请基于以上两份文档内容，分析它们的异同点。");
             return sb.toString().trim();
         } catch (Exception e) {
             return "文档对比失败: " + e.getMessage();
@@ -280,7 +289,9 @@ public class RagTools {
                 String text = r.text().length() > 400 ? r.text().substring(0, 400) + "..." : r.text();
                 sb.append("[").append(i + 1).append("] ").append(text).append("\n\n");
             }
-            sb.append("请基于以上内容生成一份结构化的摘要。");
+            String summarySuffix = PromptRegistry.getTemplate("search_summary");
+            sb.append(summarySuffix != null && !summarySuffix.isBlank()
+                    ? summarySuffix : "请基于以上内容生成一份结构化的摘要。");
             return sb.toString().trim();
         } catch (Exception e) {
             return "摘要生成失败: " + e.getMessage();

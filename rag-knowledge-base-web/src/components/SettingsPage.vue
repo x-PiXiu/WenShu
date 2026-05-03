@@ -318,6 +318,49 @@
         </div>
       </div>
 
+      <!-- Prompt Template Management -->
+      <div class="settings-card" style="margin-bottom: 16px">
+        <div class="card-header" @click="promptExpanded = !promptExpanded" style="cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8913A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          <span class="card-title">Prompt 模板管理</span>
+          <span class="prompt-count">{{ Object.keys(form.prompts || {}).length }} 个模板</span>
+          <svg :class="['chevron', { expanded: promptExpanded }]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#B8A898" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div v-if="promptExpanded" class="prompt-section">
+          <div v-for="(cat, catIdx) in promptCategories" :key="cat.key" class="prompt-category">
+            <div class="prompt-cat-header" @click="cat.expanded = !cat.expanded">
+              <svg :class="['chevron', { expanded: cat.expanded }]" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B8A898" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              <span class="prompt-cat-label">{{ cat.label }}</span>
+              <span class="prompt-cat-count">{{ cat.keys.length }}</span>
+            </div>
+            <div v-if="cat.expanded" class="prompt-items">
+              <div v-for="key in cat.keys" :key="key" class="prompt-item">
+                <div class="prompt-item-header">
+                  <span class="prompt-item-desc">{{ form.prompts?.[key]?.description || key }}</span>
+                  <button class="prompt-reset-btn" @click="resetPrompt(key)" title="恢复默认">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    重置
+                  </button>
+                </div>
+                <textarea
+                  class="prompt-textarea"
+                  v-model="form.prompts![key].template"
+                  rows="6"
+                  :placeholder="'Prompt 模板内容...'"
+                ></textarea>
+                <div v-if="promptHasVars(key)" class="prompt-var-hint">
+                  支持变量：<code v-for="v in promptVars(key)" :key="v">{{ v }}</code>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="info-tip">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#D97B2B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            修改后点击「保存设置」生效。变量使用 <code>${'{'}变量名{'}'}</code> 格式，如 <code>${'{'}cardCount{'}'}</code>。
+          </div>
+        </div>
+      </div>
+
       <!-- Agent Persona Management -->
       <div class="settings-card" style="margin-bottom: 16px">
         <AgentManager />
@@ -352,7 +395,7 @@ import {
 } from 'naive-ui'
 import { useSettings } from '../composables/useSettings'
 import { PROVIDER_PRESETS, EMBEDDING_PRESETS } from '../types/chat'
-import type { AppSettings, DocumentTypeConfig } from '../types/chat'
+import type { AppSettings, DocumentTypeConfig, PromptEntry } from '../types/chat'
 import AgentManager from './AgentManager.vue'
 
 const { settings, loading, saving, message, fetchSettings, saveSettings, reindex } = useSettings()
@@ -364,6 +407,7 @@ const form = reactive<AppSettings>({
   rag: { chunkSize: 300, chunkOverlap: 30, vectorTopK: 5, keywordTopK: 10, rrfK: 60, minScore: 0.3 },
   a2a: { enabled: true, agentName: '文枢', agentDescription: '' },
   webSearch: { provider: 'none', apiKey: '', baseUrl: '', maxResults: 5 },
+  prompts: {} as Record<string, PromptEntry>,
   documentTypes: [
     { name: 'GENERAL', label: '通用文档', chunkSize: 512, chunkOverlap: 50 },
     { name: 'TECHNICAL', label: '技术文档', chunkSize: 800, chunkOverlap: 100 },
@@ -378,6 +422,32 @@ const llmTokens = ref(2048)
 const newTypeName = ref('')
 const newTypeLabel = ref('')
 const showWsKey = ref(false)
+const promptExpanded = ref(false)
+const promptDefaults = ref<Record<string, PromptEntry> | null>(null)
+
+const promptCategories = ref([
+  { key: 'core', label: '核心提示词', expanded: true, keys: ['rag_qa', 'blog_qa', 'flashcard_generate'] },
+  { key: 'summary', label: '摘要提示词', expanded: false, keys: ['conversation_summary', 'article_summary'] },
+  { key: 'tool', label: '工具提示词', expanded: false, keys: ['translate', 'document_compare', 'search_summary'] },
+])
+
+function promptHasVars(key: string): boolean {
+  const tmpl = form.prompts?.[key]?.template || ''
+  return /\$\{[^}]+\}/.test(tmpl)
+}
+
+function promptVars(key: string): string[] {
+  const tmpl = form.prompts?.[key]?.template || ''
+  return [...tmpl.matchAll(/\$\{([^}]+)\}/g)].map(m => m[1])
+}
+
+function resetPrompt(key: string) {
+  if (promptDefaults.value?.[key]) {
+    if (form.prompts) {
+      form.prompts[key].template = promptDefaults.value[key].template
+    }
+  }
+}
 
 const webSearchProviders = [
   { value: 'none', label: '关闭', desc: '不使用互联网搜索', icon: '⊘' },
@@ -455,6 +525,16 @@ watch(() => settings.value, (s) => {
     if (s.webSearch) Object.assign(form.webSearch!, s.webSearch)
     if (s.documentTypes && s.documentTypes.length > 0) {
       form.documentTypes = s.documentTypes.map(dt => ({ ...dt }))
+    }
+    if (s.prompts && Object.keys(s.prompts).length > 0) {
+      form.prompts = Object.fromEntries(
+        Object.entries(s.prompts).map(([k, v]) => [k, { ...v }])
+      )
+      if (!promptDefaults.value) {
+        promptDefaults.value = Object.fromEntries(
+          Object.entries(s.prompts).map(([k, v]) => [k, { ...v }])
+        )
+      }
     }
     llmTemp.value = s.llm.temperature ?? 0.7
     llmTokens.value = s.llm.maxTokens ?? 2048
@@ -783,4 +863,28 @@ onMounted(() => {
 .slide-fade-leave-active { transition: all 0.15s ease-in; }
 .slide-fade-enter-from { opacity: 0; transform: translateY(-8px); }
 .slide-fade-leave-to { opacity: 0; transform: translateY(-4px); }
+
+/* Prompt Management */
+.prompt-count { font-size: 11px; color: #B8A898; margin-left: auto; }
+.chevron { transition: transform 0.2s; }
+.chevron.expanded { transform: rotate(180deg); }
+.prompt-section { padding: 0 0 8px; }
+.prompt-category { border-bottom: 1px solid #F5F0EB; }
+.prompt-category:last-child { border-bottom: none; }
+.prompt-cat-header { display: flex; align-items: center; gap: 8px; padding: 10px 18px; cursor: pointer; }
+.prompt-cat-header:hover { background: #FEFCFA; }
+.prompt-cat-label { font-size: 13px; font-weight: 600; color: #3D3028; }
+.prompt-cat-count { font-size: 11px; color: #B8A898; background: #F0E8DD; padding: 1px 6px; border-radius: 8px; }
+.prompt-items { padding: 0 18px 12px; display: flex; flex-direction: column; gap: 12px; }
+.prompt-item { background: #FEFCFA; border: 1px solid #F0E8DD; border-radius: 8px; padding: 10px 12px; }
+.prompt-item-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.prompt-item-desc { font-size: 12px; font-weight: 600; color: #6B5E52; }
+.prompt-reset-btn { display: inline-flex; align-items: center; gap: 3px; background: none; border: 1px solid #E8DDD0; border-radius: 5px; font-size: 11px; color: #B8A898; cursor: pointer; padding: 2px 8px; }
+.prompt-reset-btn:hover { color: #D97B2B; border-color: #D97B2B; }
+.prompt-textarea { width: 100%; border: 1px solid #E8DDD0; border-radius: 6px; padding: 8px 10px; font-size: 12px; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; line-height: 1.5; resize: vertical; min-height: 80px; outline: none; background: #fff; color: #3D3028; }
+.prompt-textarea:focus { border-color: #D97B2B; }
+.prompt-var-hint { margin-top: 4px; font-size: 11px; color: #B8A898; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.prompt-var-hint code { background: #F0E8DD; padding: 1px 5px; border-radius: 3px; font-size: 10px; color: #8B7E74; font-family: monospace; }
+.prompt-section .info-tip { margin: 8px 18px 10px; }
+.prompt-section .info-tip code { background: #F0E8DD; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #8B6914; font-family: monospace; }
 </style>

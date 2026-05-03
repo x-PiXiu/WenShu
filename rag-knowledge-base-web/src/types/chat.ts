@@ -119,6 +119,13 @@ export interface AppSettings {
   a2a: A2AAppConfig
   documentTypes?: DocumentTypeConfig[]
   webSearch?: WebSearchConfig
+  prompts?: Record<string, PromptEntry>
+}
+
+export interface PromptEntry {
+  template: string
+  description: string
+  category: string
 }
 
 // Memory Types

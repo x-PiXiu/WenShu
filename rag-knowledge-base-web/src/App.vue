@@ -14,6 +14,9 @@
             <button :class="['nav-btn', { active: currentPage === 'blog' || currentPage === 'blog-detail' }]" @click="switchPage('blog')" title="博客">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
             </button>
+            <button :class="['nav-btn', { active: currentPage === 'flashcard' || currentPage === 'flashcard-detail' || currentPage === 'flashcard-study' }]" @click="switchPage('flashcard')" title="闪卡">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+            </button>
             <button :class="['nav-btn', { active: currentPage === 'a2a' }]" @click="switchPage('a2a')" title="A2A 节点">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
             </button>
@@ -76,6 +79,19 @@
             <!-- Blog Detail -->
             <template v-if="currentPage === 'blog-detail'">
               <BlogDetail :article="currentArticle" @back="switchPage('blog')" />
+            </template>
+
+            <!-- Flashcard Pages -->
+            <template v-if="currentPage === 'flashcard'">
+              <FlashcardPage @open-deck="(id: string) => { currentDeckId = id; currentPage = 'flashcard-detail' }"
+                             @study="(id: string) => { currentStudyDeckId = id; currentPage = 'flashcard-study' }" />
+            </template>
+            <template v-if="currentPage === 'flashcard-detail'">
+              <DeckDetail :deck-id="currentDeckId" @back="currentPage = 'flashcard'"
+                          @study="(id: string) => { currentStudyDeckId = id; currentPage = 'flashcard-study' }" />
+            </template>
+            <template v-if="currentPage === 'flashcard-study'">
+              <StudyMode :deck-id="currentStudyDeckId" @back="currentPage = 'flashcard-detail'" />
             </template>
 
             <!-- A2A Page -->
@@ -239,6 +255,9 @@ import MediaManager from './components/admin/MediaManager.vue'
 import MemoryManager from './components/admin/MemoryManager.vue'
 import EvalDashboard from './components/admin/EvalDashboard.vue'
 import LlmMonitor from './components/admin/LlmMonitor.vue'
+import FlashcardPage from './components/flashcard/FlashcardPage.vue'
+import DeckDetail from './components/flashcard/DeckDetail.vue'
+import StudyMode from './components/flashcard/StudyMode.vue'
 import { useA2aClient } from './composables/useA2aClient'
 import { useSettings } from './composables/useSettings'
 import { useChat } from './composables/useChat'
@@ -277,6 +296,8 @@ const stats = ref<Stats | null>(null)
 
 const currentArticle = ref<Article | null>(null)
 const editingArticle = ref<Article | null>(null)
+const currentDeckId = ref('')
+const currentStudyDeckId = ref('')
 const adminPassword = ref('')
 const adminLoginError = ref(false)
 
@@ -289,6 +310,9 @@ const pageTitle = computed(() => {
     case 'blog': return '文枢 · 博客'
     case 'blog-detail': return currentArticle.value?.title || '文枢 · 博客'
     case 'a2a': return '文枢 · A2A 节点'
+    case 'flashcard': return '文枢 · 闪卡'
+    case 'flashcard-detail': return '闪卡详情'
+    case 'flashcard-study': return '学习模式'
     case 'admin':
     case 'admin-posts':
       switch (adminTab.value) {

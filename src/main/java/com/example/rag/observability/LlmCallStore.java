@@ -1,66 +1,20 @@
 package com.example.rag.observability;
 
+import com.example.rag.config.DatabasePool;
+
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
 
 /**
  * LLM 调用日志持久化：记录每次 LLM 调用的 Token、延迟、模型等信息
  */
 public class LlmCallStore {
 
-    private static final String DB_URL = "jdbc:sqlite:chat.db";
-    private static final int POOL_SIZE = 2;
-    private static final BlockingQueue<Connection> pool = new LinkedBlockingQueue<>(POOL_SIZE);
-
-    static {
-        for (int i = 0; i < POOL_SIZE; i++) {
-            try {
-                pool.offer(createRawConnection());
-            } catch (SQLException e) {
-                System.err.println("[WARN] Failed to init LlmCallStore connection: " + e.getMessage());
-            }
-        }
-    }
-
-    private static Connection createRawConnection() throws SQLException {
-        Connection conn = DriverManager.getConnection(DB_URL);
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute("PRAGMA journal_mode=WAL");
-            stmt.execute("PRAGMA busy_timeout=5000");
-        }
-        return conn;
-    }
-
     private static Connection getConnection() throws SQLException {
-        Connection raw;
-        try {
-            raw = pool.poll(3, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return createRawConnection();
-        }
-        if (raw == null || raw.isClosed()) {
-            raw = createRawConnection();
-        }
-        final Connection delegate = raw;
-        return (Connection) java.lang.reflect.Proxy.newProxyInstance(
-                Connection.class.getClassLoader(),
-                new Class<?>[]{Connection.class},
-                (proxy, method, args) -> {
-                    if ("close".equals(method.getName()) && (args == null || args.length == 0)) {
-                        try {
-                            if (!delegate.isClosed()) pool.offer(delegate);
-                        } catch (SQLException ignored) {}
-                        return null;
-                    }
-                    return method.invoke(delegate, args);
-                }
-        );
+        return DatabasePool.getConnection();
     }
 
     public LlmCallStore() {

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E8913A"/>
+      <stop offset="100%" stop-color="#D4644A"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="100" height="100" rx="22" fill="url(#bg)"/>
+  <!-- Open book - left page -->
+  <path d="M50 28Q36 23 10 26L10 76Q36 73 50 80Z" fill="rgba(250,247,242,0.9)"/>
+  <!-- Open book - right page -->
+  <path d="M50 28Q64 23 90 26L90 76Q64 73 50 80Z" fill="white"/>
+  <!-- Spine shadow -->
+  <line x1="50" y1="28" x2="50" y2="80" stroke="rgba(232,221,208,0.6)" stroke-width="1.8"/>
+  <!-- Page lines left -->
+  <line x1="19" y1="38" x2="44" y2="36" stroke="#D4C8BA" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="19" y1="47" x2="44" y2="45" stroke="#D4C8BA" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="19" y1="56" x2="44" y2="54" stroke="#D4C8BA" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Page lines right -->
+  <line x1="56" y1="36" x2="81" y2="38" stroke="#D4C8BA" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="56" y1="45" x2="81" y2="47" stroke="#D4C8BA" stroke-width="1.2" stroke-linecap="round"/>
+  <line x1="56" y1="54" x2="81" y2="56" stroke="#D4C8BA" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Sparkle star - AI wisdom -->
+  <path d="M50 6L52.2 13.5L59 16L52.2 18.5L50 26L47.8 18.5L41 16L47.8 13.5Z" fill="white"/>
+  <!-- Tiny sparkle dots -->
+  <circle cx="38" cy="12" r="2" fill="white" opacity="0.7"/>
+  <circle cx="64" cy="14" r="1.5" fill="white" opacity="0.5"/>
+</svg>

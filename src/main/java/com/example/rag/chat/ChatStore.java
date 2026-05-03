@@ -2,74 +2,21 @@ package com.example.rag.chat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import com.example.rag.config.DatabasePool;
+
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
 
 /**
  * 聊天持久化：基于 SQLite 存储对话和消息
  */
 public class ChatStore {
 
-    private static final String DB_URL = "jdbc:sqlite:chat.db";
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    // Simple connection pool: pre-created connections with WAL + busy_timeout.
-    // Proxy wrapper ensures try-with-resources in callers returns connections
-    // to the pool instead of closing them.
-    private static final int POOL_SIZE = 3;
-    private static final BlockingQueue<Connection> pool = new LinkedBlockingQueue<>(POOL_SIZE);
-
-    static {
-        for (int i = 0; i < POOL_SIZE; i++) {
-            try {
-                pool.offer(createRawConnection());
-            } catch (SQLException e) {
-                System.err.println("[WARN] Failed to init DB connection: " + e.getMessage());
-            }
-        }
-    }
-
-    private static Connection createRawConnection() throws SQLException {
-        Connection conn = DriverManager.getConnection(DB_URL);
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute("PRAGMA journal_mode=WAL");
-            stmt.execute("PRAGMA busy_timeout=5000");
-        }
-        return conn;
-    }
-
-    /**
-     * Borrow a pooled connection, wrapped so that close() returns it to the pool.
-     * Existing try-with-resources patterns work without any code changes.
-     */
     private static Connection getConnection() throws SQLException {
-        Connection raw;
-        try {
-            raw = pool.poll(3, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return createRawConnection();
-        }
-        if (raw == null || raw.isClosed()) {
-            raw = createRawConnection();
-        }
-        final Connection delegate = raw;
-        return (Connection) java.lang.reflect.Proxy.newProxyInstance(
-                Connection.class.getClassLoader(),
-                new Class<?>[]{Connection.class},
-                (proxy, method, args) -> {
-                    if ("close".equals(method.getName()) && (args == null || args.length == 0)) {
-                        try {
-                            if (!delegate.isClosed()) pool.offer(delegate);
-                        } catch (SQLException ignored) {}
-                        return null;
-                    }
-                    return method.invoke(delegate, args);
-                }
-        );
+        return DatabasePool.getConnection();
     }
 
     public ChatStore() {

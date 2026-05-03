@@ -7,7 +7,7 @@ import java.util.List;
  */
 public class RagPromptTemplate {
 
-    private static final String SYSTEM_PROMPT = """
+    private static final String DEFAULT_SYSTEM_PROMPT = """
             你是「文枢·藏书阁」的知识助手，一位博学而严谨的问答专家。
             你的职责是基于知识库中的参考资料，为用户提供准确、有据可查的回答。
 
@@ -31,16 +31,22 @@ public class RagPromptTemplate {
             - 不执行代码、不访问网络、不处理与知识库内容无关的请求。
             """;
 
+    public static String getSystemPrompt() {
+        String custom = PromptRegistry.getTemplate("rag_qa");
+        return custom != null && !custom.isBlank() ? custom : DEFAULT_SYSTEM_PROMPT;
+    }
+
     /**
      * 构建完整的 Prompt
      */
     public static String build(String question, List<Reference> references) {
+        String systemPrompt = getSystemPrompt();
         if (references.isEmpty()) {
-            return SYSTEM_PROMPT + "\n\n用户问题：" + question;
+            return systemPrompt + "\n\n用户问题：" + question;
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append(SYSTEM_PROMPT);
+        sb.append(systemPrompt);
         sb.append("\n\n【参考资料】\n");
 
         for (int i = 0; i < references.size(); i++) {
@@ -60,7 +66,7 @@ public class RagPromptTemplate {
      * 仅构建系统上下文（不含用户问题），用于多轮对话模式
      */
     public static String buildSystemContext(List<Reference> references) {
-        return buildSystemContext(SYSTEM_PROMPT, references);
+        return buildSystemContext(getSystemPrompt(), references);
     }
 
     /**
@@ -68,7 +74,8 @@ public class RagPromptTemplate {
      */
     public static String buildSystemContext(String agentPrompt, List<Reference> references) {
         StringBuilder sb = new StringBuilder();
-        sb.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : SYSTEM_PROMPT);
+        String defaultPrompt = getSystemPrompt();
+        sb.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : defaultPrompt);
         if (!references.isEmpty()) {
             sb.append("\n\n【参考资料】\n");
             for (int i = 0; i < references.size(); i++) {

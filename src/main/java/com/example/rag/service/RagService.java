@@ -7,6 +7,7 @@ import com.example.rag.parser.AutoDocumentParser;
 import com.example.rag.parser.DocumentMetaStore;
 import com.example.rag.parser.DocumentTypeDetector;
 import com.example.rag.parser.SemanticSplitter;
+import com.example.rag.prompt.PromptRegistry;
 import com.example.rag.prompt.RagPromptTemplate;
 import com.example.rag.prompt.RagPromptTemplate.Reference;
 import com.example.rag.search.HybridSearcher;
@@ -286,9 +287,12 @@ public class RagService {
     /**
      * 生成对话摘要
      */
+    private static final String DEFAULT_SUMMARY_PROMPT = "请用2-3句话总结以下对话中的关键知识点和用户需求，只保留最重要的信息：\n\n";
+
     public String summarizeConversation(List<HistoryEntry> fullHistory) {
         StringBuilder prompt = new StringBuilder();
-        prompt.append("请用2-3句话总结以下对话中的关键知识点和用户需求，只保留最重要的信息：\n\n");
+        String summaryTemplate = PromptRegistry.getTemplate("conversation_summary");
+        prompt.append(summaryTemplate != null && !summaryTemplate.isBlank() ? summaryTemplate : DEFAULT_SUMMARY_PROMPT);
         for (HistoryEntry entry : fullHistory) {
             if ("user".equals(entry.role())) {
                 prompt.append("用户: ").append(entry.content()).append("\n");
@@ -549,7 +553,7 @@ public class RagService {
     public RagAnswer askBlogDirect(String question, List<HistoryEntry> history,
                                    String articleTitle, String articleContent, String agentPrompt) {
         StringBuilder systemContent = new StringBuilder();
-        systemContent.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : BLOG_SYSTEM_PROMPT);
+        systemContent.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : getBlogSystemPrompt());
         systemContent.append("\n\n【当前文章】\n");
         systemContent.append("标题：").append(articleTitle).append("\n\n");
         systemContent.append(articleContent);
@@ -581,7 +585,7 @@ public class RagService {
     public StreamContext prepareBlogDirectStreamContext(String question, List<HistoryEntry> history,
                                                         String articleTitle, String articleContent, String agentPrompt) {
         StringBuilder systemContent = new StringBuilder();
-        systemContent.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : BLOG_SYSTEM_PROMPT);
+        systemContent.append(agentPrompt != null && !agentPrompt.isBlank() ? agentPrompt : getBlogSystemPrompt());
         systemContent.append("\n\n【当前文章】\n");
         systemContent.append("标题：").append(articleTitle).append("\n\n");
         systemContent.append(articleContent);
@@ -603,7 +607,7 @@ public class RagService {
         return new StreamContext(messages, List.of());
     }
 
-    private static final String BLOG_SYSTEM_PROMPT = """
+    private static final String DEFAULT_BLOG_SYSTEM_PROMPT = """
             你是「文枢·博客」的智能助手，专门回答关于当前文章的问题。
             你已经收到了用户正在阅读的完整文章内容，请严格基于该文章内容回答。
 
@@ -613,6 +617,11 @@ public class RagService {
             - 支持多轮对话，结合历史上下文理解用户的追问。
             - 如果问题与文章内容无关，礼貌地引导用户围绕文章内容提问。
             """;
+
+    private static String getBlogSystemPrompt() {
+        String custom = PromptRegistry.getTemplate("blog_qa");
+        return custom != null && !custom.isBlank() ? custom : DEFAULT_BLOG_SYSTEM_PROMPT;
+    }
 
     /**
      * 博客专属 RAG 问答（可限定到特定文章）

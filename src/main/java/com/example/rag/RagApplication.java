@@ -18,6 +18,7 @@ import com.example.rag.eval.RagEvaluator;
 import com.example.rag.parser.AutoDocumentParser;
 import com.example.rag.observability.LlmCallListener;
 import com.example.rag.observability.LlmCallStore;
+import com.example.rag.prompt.PromptRegistry;
 import com.example.rag.service.MemoryStore;
 import com.example.rag.service.RagService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -71,6 +72,8 @@ public class RagApplication {
     private static EvalTestCaseStore evalTestCaseStore;
     private static EvalResultStore evalResultStore;
     private static com.example.rag.tools.ToolEngine toolEngine;
+    private static com.example.rag.flashcard.FlashcardStore flashcardStore;
+    private static com.example.rag.flashcard.FlashcardGenerator flashcardGenerator;
 
     // Active streaming tasks: conversationId -> AbortController
     private static final ConcurrentHashMap<String, StreamAbortController> activeStreams = new ConcurrentHashMap<>();
@@ -82,6 +85,7 @@ public class RagApplication {
     public static void main(String[] args) {
         // 1. Load config
         config = AppConfiguration.load();
+        PromptRegistry.init(config);
         System.out.println("[INIT] Configuration loaded");
 
         // 2. Initialize RAG service
@@ -155,6 +159,12 @@ public class RagApplication {
         authFilter = new AuthFilter(config.getBlog().adminPassword);
         evalTestCaseStore = new EvalTestCaseStore("eval");
         evalResultStore = new EvalResultStore("eval");
+
+        // 4.3 Flashcard generator
+        flashcardStore = new com.example.rag.flashcard.FlashcardStore();
+        flashcardGenerator = new com.example.rag.flashcard.FlashcardGenerator(ragService);
+        System.out.println("[INIT] Flashcard store initialized");
+
         int port = config.getServer().port;
 
         agentCard = AgentCard.create(
@@ -165,6 +175,14 @@ public class RagApplication {
 
         // 5. Start Javalin server
         Javalin app = Javalin.create(javalinConfig -> {
+            // Serve built Vue frontend — only if static/ directory exists (optional)
+            Path staticDir = Path.of("static").toAbsolutePath();
+            if (Files.isDirectory(staticDir)) {
+                javalinConfig.staticFiles.add(staticDir.toString(), io.javalin.http.staticfiles.Location.EXTERNAL);
+                System.out.println("[INIT] Static frontend served from: " + staticDir);
+            } else {
+                System.out.println("[INIT] No static/ directory found — API-only mode (frontend runs separately)");
+            }
             javalinConfig.bundledPlugins.enableCors(cors -> {
                 cors.addRule(it -> it.anyHost());
             });
@@ -181,6 +199,22 @@ public class RagApplication {
         });
 
         registerRoutes(app);
+
+        // SPA fallback: serve index.html for all non-API, non-static, non-upload routes
+        Path staticDir = Path.of("static").toAbsolutePath();
+        if (Files.isDirectory(staticDir)) {
+            app.get("/*", ctx -> {
+                String path = ctx.path();
+                if (path.startsWith("/api/") || path.startsWith("/uploads/") || path.startsWith("/a2a/")) return;
+                // Skip requests already handled by static file handler (assets/*)
+                if (path.startsWith("/assets/")) return;
+                Path indexHtml = staticDir.resolve("index.html");
+                if (Files.exists(indexHtml)) {
+                    ctx.contentType("text/html; charset=utf-8");
+                    ctx.result(Files.newInputStream(indexHtml));
+                }
+            });
+        }
 
         // 静态文件服务：/uploads/{filename}
         Path uploadsDir = Path.of("uploads").toAbsolutePath();
@@ -296,6 +330,11 @@ public class RagApplication {
                 curWs.apiKey = nvl(ws.apiKey, curWs.apiKey);
                 curWs.baseUrl = nvl(ws.baseUrl, curWs.baseUrl);
                 if (ws.maxResults > 0) curWs.maxResults = ws.maxResults;
+            }
+
+            if (newConfig.getPrompts() != null) {
+                config.setPrompts(newConfig.getPrompts());
+                PromptRegistry.init(config);
             }
 
             config.save();
@@ -461,6 +500,9 @@ public class RagApplication {
 
         // ===== Blog Public Routes =====
         registerBlogRoutes(app);
+
+        // ===== Flashcard Routes =====
+        registerFlashcardRoutes(app);
     }
 
     private static void registerBlogRoutes(Javalin app) {
@@ -706,7 +748,10 @@ public class RagApplication {
             }
             String text = article.content();
             if (text.length() > 2000) text = text.substring(0, 2000);
-            String prompt = "请用1-2句话总结以下文章的核心内容，不超过100字，直接输出摘要文本，不要加引号或前缀：\n\n" + text;
+            String summaryTemplate = PromptRegistry.getTemplate("article_summary");
+            String defaultSummaryPrompt = "请用1-2句话总结以下文章的核心内容，不超过100字，直接输出摘要文本，不要加引号或前缀：\n\n";
+            String prompt = (summaryTemplate != null && !summaryTemplate.isBlank()
+                    ? summaryTemplate : defaultSummaryPrompt) + text;
             String generatedSummary = ragService.query(prompt);
             generatedSummary = generatedSummary.replaceAll("^\"|\"$", "").trim();
             article = blogStore.updateArticle(id, article.title(), article.content(),
@@ -1556,5 +1601,227 @@ public class RagApplication {
 
     private static String nvl(String newVal, String defaultVal) {
         return (newVal != null && !newVal.isBlank()) ? newVal : defaultVal;
+    }
+
+    // ===== Flashcard Routes =====
+
+    private static void registerFlashcardRoutes(Javalin app) {
+
+        // Generate flashcards from file or text
+        app.post("/api/flashcard/generate", ctx -> {
+            String contentType = ctx.contentType();
+            com.example.rag.flashcard.FlashcardStore.Deck deck;
+            List<com.example.rag.flashcard.FlashcardStore.Card> cards;
+
+            if (contentType != null && contentType.contains("multipart/form-data")) {
+                // File upload
+                var uploadedFile = ctx.uploadedFile("file");
+                if (uploadedFile == null) {
+                    ctx.status(400).json(Map.of("error", "No file uploaded"));
+                    return;
+                }
+                String cardCountStr = ctx.formParam("cardCount");
+                String difficulty = nvl(ctx.formParam("difficulty"), "intermediate");
+                int cardCount = cardCountStr != null ? Integer.parseInt(cardCountStr) : 20;
+
+                // Save temp file and parse
+                var tempFile = java.nio.file.Files.createTempFile("fc-", uploadedFile.filename());
+                try (var is = uploadedFile.content()) {
+                    java.nio.file.Files.copy(is, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+                String text;
+                try {
+                    text = com.example.rag.parser.AutoDocumentParser.load(tempFile).text();
+                } finally {
+                    java.nio.file.Files.deleteIfExists(tempFile);
+                }
+
+                var request = new com.example.rag.flashcard.FlashcardGenerator.GenerateRequest(
+                        text, uploadedFile.filename(), cardCount, difficulty);
+                var generated = flashcardGenerator.generate(request);
+                deck = flashcardStore.createDeck(
+                        uploadedFile.filename().replaceAll("\\.[^.]+$", ""), null, uploadedFile.filename());
+                cards = new ArrayList<>();
+                for (var gc : generated) {
+                    cards.add(flashcardStore.createCard(deck.id(), gc.front(), gc.back(), gc.tags(), gc.difficulty()));
+                }
+            } else {
+                // Text input
+                Map<String, Object> body = MAPPER.readValue(ctx.body(), MAP_TYPE);
+                String text = (String) body.get("text");
+                if (text == null || text.isBlank()) {
+                    ctx.status(400).json(Map.of("error", "text is required"));
+                    return;
+                }
+                String title = (String) body.getOrDefault("title", "粘贴文本");
+                int cardCount = body.get("cardCount") instanceof Number
+                        ? ((Number) body.get("cardCount")).intValue() : 20;
+                String difficulty = (String) body.getOrDefault("difficulty", "intermediate");
+
+                var request = new com.example.rag.flashcard.FlashcardGenerator.GenerateRequest(
+                        text, null, cardCount, difficulty);
+                var generated = flashcardGenerator.generate(request);
+                deck = flashcardStore.createDeck(title, null, null);
+                cards = new ArrayList<>();
+                for (var gc : generated) {
+                    cards.add(flashcardStore.createCard(deck.id(), gc.front(), gc.back(), gc.tags(), gc.difficulty()));
+                }
+            }
+
+            flashcardStore.updateDeckStats(deck.id());
+            deck = flashcardStore.getDeck(deck.id());
+            var stats = flashcardStore.getDeckStats(deck.id());
+            ctx.json(Map.of("deck", deck, "cards", cards, "stats", stats));
+        });
+
+        // List decks
+        app.get("/api/flashcard/decks", ctx -> {
+            var decks = flashcardStore.listDecks();
+            ctx.json(decks);
+        });
+
+        // Get deck detail
+        app.get("/api/flashcard/decks/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            var deck = flashcardStore.getDeck(id);
+            if (deck == null) { ctx.status(404).json(Map.of("error", "Deck not found")); return; }
+            var cards = flashcardStore.listCardsByDeck(id);
+            var stats = flashcardStore.getDeckStats(id);
+            ctx.json(Map.of("deck", deck, "cards", cards, "stats", stats));
+        });
+
+        // Update card
+        app.put("/api/flashcard/cards/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            Map<String, Object> body = MAPPER.readValue(ctx.body(), MAP_TYPE);
+            String front = (String) body.get("front");
+            String back = (String) body.get("back");
+            @SuppressWarnings("unchecked")
+            List<String> tags = body.get("tags") instanceof List ? (List<String>) body.get("tags") : List.of();
+            int difficulty = body.get("difficulty") instanceof Number ? ((Number) body.get("difficulty")).intValue() : 2;
+            var card = flashcardStore.updateCard(id, front, back, tags, difficulty);
+            if (card == null) { ctx.status(404).json(Map.of("error", "Card not found")); return; }
+            ctx.json(card);
+        });
+
+        // Delete deck
+        app.delete("/api/flashcard/decks/{id}", ctx -> {
+            flashcardStore.deleteDeck(ctx.pathParam("id"));
+            ctx.json(Map.of("ok", true));
+        });
+
+        // Delete card
+        app.delete("/api/flashcard/cards/{id}", ctx -> {
+            var card = flashcardStore.getCard(ctx.pathParam("id"));
+            flashcardStore.deleteCard(ctx.pathParam("id"));
+            if (card != null) flashcardStore.updateDeckStats(card.deckId());
+            ctx.json(Map.of("ok", true));
+        });
+
+        // Submit review
+        app.post("/api/flashcard/review", ctx -> {
+            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
+            String cardId = body.get("cardId");
+            String grade = body.get("grade");
+            if (cardId == null || grade == null) {
+                ctx.status(400).json(Map.of("error", "cardId and grade are required"));
+                return;
+            }
+            var card = flashcardStore.updateReview(cardId, grade);
+            if (card == null) { ctx.status(404).json(Map.of("error", "Card not found")); return; }
+            ctx.json(card);
+        });
+
+        // Batch submit reviews
+        app.post("/api/flashcard/review/batch", ctx -> {
+            List<Map<String, String>> items = MAPPER.readValue(ctx.body(),
+                    new com.fasterxml.jackson.core.type.TypeReference<List<Map<String, String>>>() {});
+            int updated = 0;
+            for (var item : items) {
+                String cardId = item.get("cardId");
+                String grade = item.get("grade");
+                if (cardId != null && grade != null) {
+                    flashcardStore.updateReview(cardId, grade);
+                    updated++;
+                }
+            }
+            ctx.json(Map.of("updated", updated));
+        });
+
+        // Get due cards for study
+        app.get("/api/flashcard/study/{deckId}", ctx -> {
+            String deckId = ctx.pathParam("deckId");
+            String mode = ctx.queryParam("mode");
+            List<com.example.rag.flashcard.FlashcardStore.Card> cards;
+            if ("all".equals(mode)) {
+                cards = flashcardStore.getAllCardsShuffled(deckId);
+            } else {
+                cards = flashcardStore.getDueCards(deckId);
+            }
+            ctx.json(cards);
+        });
+
+        // Overall stats
+        app.get("/api/flashcard/stats", ctx -> {
+            ctx.json(flashcardStore.getOverallStats());
+        });
+
+        // Export deck as printable HTML
+        app.get("/api/flashcard/decks/{id}/export", ctx -> {
+            String id = ctx.pathParam("id");
+            var deck = flashcardStore.getDeck(id);
+            if (deck == null) { ctx.status(404).json(Map.of("error", "Deck not found")); return; }
+            var cards = flashcardStore.listCardsByDeck(id);
+            if (cards.isEmpty()) { ctx.status(400).json(Map.of("error", "No cards to export")); return; }
+
+            StringBuilder html = new StringBuilder();
+            html.append("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
+            html.append("<title>").append(escapeHtml(deck.title())).append(" - 闪卡</title>");
+            html.append("<style>");
+            html.append("body{font-family:'Microsoft YaHei','SimSun','Noto Sans SC',sans-serif;max-width:800px;margin:0 auto;padding:20px;color:#3D3028}");
+            html.append("h1{font-size:20px;border-bottom:2px solid #D97B2B;padding-bottom:8px}");
+            html.append(".card{page-break-inside:avoid;margin:16px 0;border:1px solid #E8DDD0;border-radius:8px;overflow:hidden}");
+            html.append(".card-front{padding:14px 16px;background:#fff;border-bottom:1px dashed #E8DDD0}");
+            html.append(".card-back{padding:14px 16px;background:#FFF9F0}");
+            html.append(".card-label{font-size:11px;font-weight:600;margin-bottom:6px}");
+            html.append(".label-q{color:#D97B2B}.label-a{color:#16a34a}");
+            html.append(".card-text{font-size:14px;line-height:1.6}");
+            html.append(".tags{margin-top:6px;display:flex;gap:4px;flex-wrap:wrap}");
+            html.append(".tag{font-size:11px;background:#F0E8DD;color:#8B7E74;padding:1px 6px;border-radius:3px}");
+            html.append("@media print{body{padding:0}.card{margin:8px 0}}");
+            html.append("</style></head><body>");
+            html.append("<h1>").append(escapeHtml(deck.title())).append("</h1>");
+            html.append("<p style='color:#B8A898;font-size:13px'>").append(cards.size()).append(" 张卡片");
+            if (deck.sourceFile() != null) html.append(" · 来源: ").append(escapeHtml(deck.sourceFile()));
+            html.append("</p>");
+
+            for (int i = 0; i < cards.size(); i++) {
+                var card = cards.get(i);
+                html.append("<div class='card'>");
+                html.append("<div class='card-front'>");
+                html.append("<div class='card-label label-q'>Q #").append(i + 1).append("</div>");
+                html.append("<div class='card-text'>").append(escapeHtml(card.front())).append("</div>");
+                html.append("</div>");
+                html.append("<div class='card-back'>");
+                html.append("<div class='card-label label-a'>A</div>");
+                html.append("<div class='card-text'>").append(escapeHtml(card.back())).append("</div>");
+                if (!card.tags().isEmpty()) {
+                    html.append("<div class='tags'>");
+                    for (String tag : card.tags()) html.append("<span class='tag'>").append(escapeHtml(tag)).append("</span>");
+                    html.append("</div>");
+                }
+                html.append("</div></div>");
+            }
+            html.append("</body></html>");
+
+            ctx.contentType("text/html; charset=utf-8");
+            ctx.header("Content-Disposition", "inline; filename=\"flashcards-" + escapeHtml(deck.title()) + ".html\"");
+            ctx.result(html.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        });
+    }
+
+    private static String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 }
