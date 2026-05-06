@@ -765,14 +765,21 @@ public class RagService {
     private String buildSystemContent(String question, String agentPrompt, List<Reference> refs, List<SearchResult> results) {
         String systemContent = buildContextWithMemories(question, agentPrompt, refs);
 
-        if (results.isEmpty() && webSearcher != null && webSearcher.isConfigured()) {
-            try {
-                String webResults = webSearcher.search(question);
-                if (webResults != null && !webResults.isBlank()) {
-                    systemContent += "\n\n【互联网搜索结果】\n" + webResults
-                            + "\n\n注意：以上内容来自互联网搜索，请根据这些信息回答用户问题，并注明信息来源。";
-                }
-            } catch (Exception ignored) {}
+        if (webSearcher != null && webSearcher.isConfigured()) {
+            systemContent += "\n\n## 可用工具\n"
+                    + "- 你可以使用 webSearch 工具在互联网上搜索信息。当参考资料中没有相关内容、"
+                    + "信息不够充分、或需要最新/实时信息时，主动调用 webSearch 工具补充。"
+                    + "使用搜索结果时，明确标注信息来源是互联网搜索。";
+
+            if (results.isEmpty()) {
+                try {
+                    String webResults = webSearcher.search(question);
+                    if (webResults != null && !webResults.isBlank()) {
+                        systemContent += "\n\n【互联网搜索结果】\n" + webResults
+                                + "\n\n注意：以上内容来自互联网搜索，请根据这些信息回答用户问题，并注明信息来源。";
+                    }
+                } catch (Exception ignored) {}
+            }
         }
 
         return systemContent;
