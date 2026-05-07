@@ -14,6 +14,7 @@ import java.util.List;
 public class ChatStore {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Object WRITE_LOCK = new Object();
 
     private static Connection getConnection() throws SQLException {
         return DatabasePool.getConnection();
@@ -64,20 +65,22 @@ public class ChatStore {
     // ===== Conversation CRUD =====
 
     public Conversation createConversation(String agentId) {
-        String id = "conv-" + System.currentTimeMillis();
-        long now = System.currentTimeMillis();
-        String sql = "INSERT INTO conversation (id, title, agent_id, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?)";
+        synchronized (WRITE_LOCK) {
+            String id = "conv-" + System.currentTimeMillis();
+            long now = System.currentTimeMillis();
+            String sql = "INSERT INTO conversation (id, title, agent_id, created_at, updated_at) VALUES (?, '新对话', ?, ?, ?)";
 
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, id);
-            ps.setString(2, agentId);
-            ps.setLong(3, now);
-            ps.setLong(4, now);
-            ps.executeUpdate();
-            return new Conversation(id, "新对话", agentId, now, now);
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to create conversation: " + e.getMessage(), e);
+            try (Connection conn = getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, id);
+                ps.setString(2, agentId);
+                ps.setLong(3, now);
+                ps.setLong(4, now);
+                ps.executeUpdate();
+                return new Conversation(id, "新对话", agentId, now, now);
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to create conversation: " + e.getMessage(), e);
+            }
         }
     }
 
@@ -127,76 +130,84 @@ public class ChatStore {
     }
 
     public void updateTitle(String conversationId, String title) {
-        String sql = "UPDATE conversation SET title = ?, updated_at = ? WHERE id = ?";
+        synchronized (WRITE_LOCK) {
+            String sql = "UPDATE conversation SET title = ?, updated_at = ? WHERE id = ?";
 
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, title);
-            ps.setLong(2, System.currentTimeMillis());
-            ps.setString(3, conversationId);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to update title: " + e.getMessage(), e);
+            try (Connection conn = getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, title);
+                ps.setLong(2, System.currentTimeMillis());
+                ps.setString(3, conversationId);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to update title: " + e.getMessage(), e);
+            }
         }
     }
 
     public void touchConversation(String id) {
-        String sql = "UPDATE conversation SET updated_at = ? WHERE id = ?";
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, System.currentTimeMillis());
-            ps.setString(2, id);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to touch conversation: " + e.getMessage(), e);
+        synchronized (WRITE_LOCK) {
+            String sql = "UPDATE conversation SET updated_at = ? WHERE id = ?";
+            try (Connection conn = getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setLong(1, System.currentTimeMillis());
+                ps.setString(2, id);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to touch conversation: " + e.getMessage(), e);
+            }
         }
     }
 
     public void deleteConversation(String id) {
-        String sql = "DELETE FROM conversation WHERE id = ?";
+        synchronized (WRITE_LOCK) {
+            String sql = "DELETE FROM conversation WHERE id = ?";
 
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, id);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to delete conversation: " + e.getMessage(), e);
+            try (Connection conn = getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to delete conversation: " + e.getMessage(), e);
+            }
         }
     }
 
     // ===== Message CRUD =====
 
     public Message saveMessage(String conversationId, String role, String content, List<MessageSource> sources) {
-        long now = System.currentTimeMillis();
-        String sourcesJson = null;
-        if (sources != null && !sources.isEmpty()) {
-            try {
-                sourcesJson = MAPPER.writeValueAsString(sources);
-            } catch (Exception e) {
-                sourcesJson = null;
-            }
-        }
-
-        String sql = "INSERT INTO message (conversation_id, role, content, sources_json, created_at) VALUES (?, ?, ?, ?, ?)";
-
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
-            ps.setString(1, conversationId);
-            ps.setString(2, role);
-            ps.setString(3, content);
-            ps.setString(4, sourcesJson);
-            ps.setLong(5, now);
-            ps.executeUpdate();
-
-            try (ResultSet rs = ps.getGeneratedKeys()) {
-                if (rs.next()) {
-                    return new Message(rs.getInt(1), conversationId, role, content, sources, now);
+        synchronized (WRITE_LOCK) {
+            long now = System.currentTimeMillis();
+            String sourcesJson = null;
+            if (sources != null && !sources.isEmpty()) {
+                try {
+                    sourcesJson = MAPPER.writeValueAsString(sources);
+                } catch (Exception e) {
+                    sourcesJson = null;
                 }
             }
-        } catch (SQLException e) {
-            throw new RuntimeException("Failed to save message: " + e.getMessage(), e);
+
+            String sql = "INSERT INTO message (conversation_id, role, content, sources_json, created_at) VALUES (?, ?, ?, ?, ?)";
+
+            try (Connection conn = getConnection();
+                 PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+                ps.setString(1, conversationId);
+                ps.setString(2, role);
+                ps.setString(3, content);
+                ps.setString(4, sourcesJson);
+                ps.setLong(5, now);
+                ps.executeUpdate();
+
+                try (ResultSet rs = ps.getGeneratedKeys()) {
+                    if (rs.next()) {
+                        return new Message(rs.getInt(1), conversationId, role, content, sources, now);
+                    }
+                }
+            } catch (SQLException e) {
+                throw new RuntimeException("Failed to save message: " + e.getMessage(), e);
+            }
+            return null;
         }
-        return null;
     }
 
     public List<Message> listMessages(String conversationId) {
@@ -238,6 +249,7 @@ public class ChatStore {
      */
     public void saveMessagesInTransaction(String convId, String question,
                                           String answer, List<MessageSource> sources) {
+        synchronized (WRITE_LOCK) {
         long now = System.currentTimeMillis();
 
         // Serialize sources once
@@ -311,6 +323,7 @@ public class ChatStore {
         } catch (SQLException e) {
             throw new RuntimeException("Failed to save messages in transaction: " + e.getMessage(), e);
         }
+        } // end WRITE_LOCK
     }
 
     // ===== Data Records =====
