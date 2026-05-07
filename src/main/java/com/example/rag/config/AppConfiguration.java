@@ -30,6 +30,9 @@ public class AppConfiguration {
     private WebSearchConfig webSearch;
     private List<DocumentTypeConfig> documentTypes;
     private Map<String, PromptEntry> prompts;
+    private String workDir;
+    private List<McpServerConfig> mcpServers;
+    private List<RemoteAgentConfig> remoteAgents;
 
     public static class ServerConfig {
         public int port = 8081;
@@ -94,6 +97,18 @@ public class AppConfiguration {
         public int maxResults = 5;
     }
 
+    public static class McpServerConfig {
+        public String name = "";
+        public String sseUrl = "";
+        public boolean enabled = true;
+    }
+
+    public static class RemoteAgentConfig {
+        public String name = "";
+        public String url = "";         // base URL, e.g. http://localhost:8082
+        public boolean enabled = true;
+    }
+
     public static class DocumentTypeConfig {
         public String name;
         public String label;
@@ -134,7 +149,12 @@ public class AppConfiguration {
         Path path = Path.of(CONFIG_FILE);
         if (Files.exists(path)) {
             try {
-                return MAPPER.readValue(Files.readString(path), AppConfiguration.class);
+                AppConfiguration config = MAPPER.readValue(Files.readString(path), AppConfiguration.class);
+                if (config.mergeNewDefaults()) {
+                    config.save();
+                    System.out.println("[CONFIG] Merged updated prompt defaults into config.json");
+                }
+                return config;
             } catch (IOException e) {
                 System.err.println("Failed to load config: " + e.getMessage());
             }
@@ -142,6 +162,36 @@ public class AppConfiguration {
         AppConfiguration config = createDefault();
         config.save();
         return config;
+    }
+
+    /**
+     * Merge new default prompts into existing config.
+     * - Adds missing prompt keys from defaults
+     * - Replaces core prompts that contain known outdated patterns (e.g. "不访问网络")
+     * Returns true if any changes were made.
+     */
+    private boolean mergeNewDefaults() {
+        boolean changed = false;
+        Map<String, PromptEntry> defaults = createDefaultPrompts();
+        if (this.prompts == null) {
+            this.prompts = defaults;
+            return true;
+        }
+        for (var entry : defaults.entrySet()) {
+            String key = entry.getKey();
+            PromptEntry def = entry.getValue();
+            PromptEntry existing = this.prompts.get(key);
+            if (existing == null) {
+                this.prompts.put(key, def);
+                changed = true;
+            } else if ("core".equals(def.category) && existing.template != null
+                    && (existing.template.contains("不访问网络")
+                    || existing.template.contains("不引入外部知识"))) {
+                this.prompts.put(key, def);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     public void save() {
@@ -164,6 +214,9 @@ public class AppConfiguration {
         config.webSearch = new WebSearchConfig();
         config.documentTypes = createDefaultDocumentTypes();
         config.prompts = createDefaultPrompts();
+        config.workDir = ".";
+        config.mcpServers = new ArrayList<>();
+        config.remoteAgents = new ArrayList<>();
         return config;
     }
 
@@ -186,6 +239,15 @@ public LlmConfig getLlm() { return llm; }
     public void setA2a(A2AConfig a2a) { this.a2a = a2a; }
     public void setBlog(BlogConfig blog) { this.blog = blog; }
     public void setWebSearch(WebSearchConfig webSearch) { this.webSearch = webSearch; }
+
+    public String getWorkDir() { return workDir != null && !workDir.isBlank() ? workDir : "."; }
+    public void setWorkDir(String workDir) { this.workDir = workDir; }
+
+    public List<McpServerConfig> getMcpServers() { return mcpServers != null ? mcpServers : new ArrayList<>(); }
+    public void setMcpServers(List<McpServerConfig> mcpServers) { this.mcpServers = mcpServers; }
+
+    public List<RemoteAgentConfig> getRemoteAgents() { return remoteAgents != null ? remoteAgents : new ArrayList<>(); }
+    public void setRemoteAgents(List<RemoteAgentConfig> remoteAgents) { this.remoteAgents = remoteAgents; }
 
     public List<DocumentTypeConfig> getDocumentTypes() {
         return documentTypes != null ? documentTypes : createDefaultDocumentTypes();
@@ -324,6 +386,109 @@ public LlmConfig getLlm() { return llm; }
         map.put("search_summary", new PromptEntry(
                 "请基于以上内容生成一份结构化的摘要。",
                 "搜索摘要", "tool"));
+
+        map.put("knowledge_graph_extract", new PromptEntry("""
+                你是「文枢·藏书阁」的知识图谱提取专家。你的任务是从文档中提取核心知识实体及其关系。
+
+                ## 任务
+                - 阅读下方【文档内容】，提取最多 ${maxNodes} 个知识实体（节点）和 ${maxEdges} 条关系（边）。
+                - 优先提取核心概念、关键人物、重要技术、核心事件。
+
+                ## 节点类型
+                - person: 人物
+                - org: 组织/机构
+                - concept: 概念/理论
+                - event: 事件
+                - technology: 技术/工具
+                - location: 地点
+                - other: 其他
+
+                ## 边类型
+                - belongs_to: 属于
+                - depends_on: 依赖
+                - causes: 导致
+                - part_of: 组成部分
+                - related_to: 相关
+                - derived_from: 派生自
+                - contrasts_with: 对比
+
+                ## 输出格式
+                严格输出 JSON 对象，不要包含任何其他文字或 markdown 标记：
+
+                {
+                  "nodes": [
+                    {
+                      "id": "n1",
+                      "label": "节点名称",
+                      "type": "concept",
+                      "description": "一句话描述",
+                      "group": "分组名"
+                    }
+                  ],
+                  "edges": [
+                    {
+                      "source": "n1",
+                      "target": "n2",
+                      "label": "关系描述",
+                      "type": "related_to",
+                      "weight": 1.0
+                    }
+                  ],
+                  "summary": "整篇文档的知识概要（2-3句话）"
+                }
+
+                ## 注意事项
+                - 严格遵守 JSON 格式，不要输出 ```json 等代码围栏标记。
+                - 每个节点必须有唯一的 id（如 n1, n2, n3...）。
+                - edge 的 source 和 target 必须引用已定义的节点 id。
+                - label 使用中文，简洁明了。
+                - description 简短但信息丰富。
+                - group 用于视觉聚类，将相关节点分到同一组。
+                - weight 表示关系强度，1.0 为标准，更强的关系可用 1.5-2.0。
+                """, "知识图谱提取", "core"));
+
+        map.put("knowledge_graph_qa", new PromptEntry("""
+                你是「文枢·藏书阁」的知识图谱问答助手。用户正在浏览一个知识图谱，并针对图谱内容提出问题。
+
+                ## 任务
+                - 结合下方【图谱上下文】和【对话历史】回答用户的问题。
+                - 回答要基于图谱中实际存在的节点和关系，不要编造。
+
+                ## 回答原则
+                - 使用中文回答，语言清晰流畅。
+                - 引用相关节点时，标注其名称。
+                - 如果涉及多个节点间的关系，清晰描述路径。
+                - 如果问题超出图谱范围，如实告知。
+
+                ## 图谱上下文
+                ${graphContext}
+                """, "知识图谱问答", "core"));
+
+        map.put("knowledge_graph_suggest", new PromptEntry("""
+                你是「文枢·藏书阁」的知识图谱关系推理专家。用户选中了两个节点，请你推理它们之间可能存在的关系。
+
+                ## 任务
+                - 根据下方【节点信息】和【文档上下文】，推理两个节点之间可能的关系。
+                - 提供最多 3 个候选关系，按可能性排序。
+
+                ## 输出格式
+                严格输出 JSON 数组，不要包含任何其他文字或 markdown 标记：
+
+                [
+                  {
+                    "label": "关系描述",
+                    "type": "related_to",
+                    "weight": 1.0,
+                    "reason": "推理依据"
+                  }
+                ]
+
+                ## 节点信息
+                ${nodeInfo}
+
+                ## 文档上下文
+                ${docContext}
+                """, "知识图谱关系推荐", "core"));
 
         return map;
     }

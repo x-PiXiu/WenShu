@@ -40,6 +40,7 @@ Java 17 + Javalin 6.x + LangChain4j + Vue 3 + TypeScript + SQLite
 ### 支持的模型提供商
 
 | 类型 | 支持的提供商 |
+
 |------|-------------|
 | LLM | Ollama（本地免费）、MiniMax、OpenAI 及所有 OpenAI 兼容 API |
 | Embedding | Ollama、智谱 AI、OpenAI |

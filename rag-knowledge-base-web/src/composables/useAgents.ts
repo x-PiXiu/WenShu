@@ -1,8 +1,9 @@
 import { ref } from 'vue'
-import type { Agent } from '../types/chat'
+import type { Agent, ToolInfo } from '../types/chat'
 
 const agents = ref<Agent[]>([])
 const currentAgent = ref<Agent | null>(null)
+const availableTools = ref<ToolInfo[]>([])
 
 export function useAgents() {
 
@@ -21,11 +22,22 @@ export function useAgents() {
     }
   }
 
+  async function loadAvailableTools() {
+    try {
+      const res = await fetch('/api/tools')
+      if (res.ok) {
+        availableTools.value = await res.json()
+      }
+    } catch {
+      availableTools.value = []
+    }
+  }
+
   function selectAgent(agent: Agent | null) {
     currentAgent.value = agent
   }
 
-  async function createAgent(agent: { name: string; description?: string; systemPrompt: string; avatar?: string }): Promise<Agent | null> {
+  async function createAgent(agent: { name: string; description?: string; systemPrompt: string; avatar?: string; toolNames?: string[] | null }): Promise<Agent | null> {
     try {
       const res = await fetch('/api/agents', {
         method: 'POST',
@@ -41,7 +53,7 @@ export function useAgents() {
     return null
   }
 
-  async function updateAgent(id: string, agent: { name: string; description?: string; systemPrompt: string; avatar?: string }): Promise<Agent | null> {
+  async function updateAgent(id: string, agent: { name: string; description?: string; systemPrompt: string; avatar?: string; toolNames?: string[] | null }): Promise<Agent | null> {
     try {
       const res = await fetch(`/api/agents/${id}`, {
         method: 'PUT',
@@ -74,8 +86,8 @@ export function useAgents() {
   }
 
   return {
-    agents, currentAgent,
-    loadAgents, selectAgent,
+    agents, currentAgent, availableTools,
+    loadAgents, loadAvailableTools, selectAgent,
     createAgent, updateAgent, deleteAgent,
   }
 }

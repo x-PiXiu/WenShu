@@ -13,21 +13,19 @@
           <button :class="['fc-tab', { active: inputMode === 'text' }]" @click="inputMode = 'text'">粘贴文本</button>
         </div>
 
-        <div v-if="inputMode === 'file'" class="fc-upload-area"
-             @dragover.prevent="dragActive = true" @dragleave="dragActive = false"
-             @drop.prevent="handleDrop">
-          <input type="file" ref="fileInput" @change="handleFileSelect"
-                 accept=".pdf,.docx,.txt,.md" hidden />
-          <div v-if="!selectedFile" class="fc-upload-prompt" @click="($refs.fileInput as HTMLInputElement)?.click()">
-            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#B8A898" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            <span>拖拽文件到此处，或点击选择</span>
-            <span class="fc-upload-hint">支持 PDF、DOCX、TXT、MD</span>
-          </div>
-          <div v-else class="fc-file-info" @click="($refs.fileInput as HTMLInputElement)?.click()">
-            <span class="fc-file-name">{{ selectedFile.name }}</span>
-            <button class="fc-file-remove" @click.stop="selectedFile = null">移除</button>
-          </div>
-        </div>
+        <FileDropZone v-if="inputMode === 'file'" @select="handleFiles">
+          <template #default>
+            <div v-if="!selectedFile" class="fc-upload-prompt">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#B8A898" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              <span>拖拽文件到此处，或点击选择</span>
+              <span class="fc-upload-hint">支持 PDF、DOCX、TXT、MD</span>
+            </div>
+            <div v-else class="fc-file-info">
+              <span class="fc-file-name">{{ selectedFile.name }}</span>
+              <button class="fc-file-remove" @click.stop="selectedFile = null">移除</button>
+            </div>
+          </template>
+        </FileDropZone>
 
         <div v-else class="fc-text-area">
           <textarea v-model="inputText" placeholder="在此粘贴学习笔记、课堂内容、教材段落..."
@@ -98,6 +96,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import FileDropZone from '../common/FileDropZone.vue'
 import type { Difficulty } from '../../types/flashcard'
 import { useFlashcard } from '../../composables/useFlashcard'
 
@@ -111,7 +110,6 @@ const inputText = ref('')
 const textTitle = ref('')
 const cardCount = ref(20)
 const difficulty = ref<Difficulty>('intermediate')
-const dragActive = ref(false)
 const errorMsg = ref('')
 const importError = ref('')
 const importFileInput = ref<HTMLInputElement | null>(null)
@@ -120,14 +118,8 @@ const canGenerate = computed(() => {
   return inputMode.value === 'file' ? !!selectedFile.value : inputText.value.trim().length > 20
 })
 
-function handleFileSelect(e: Event) {
-  const target = e.target as HTMLInputElement
-  if (target.files?.[0]) selectedFile.value = target.files[0]
-}
-
-function handleDrop(e: DragEvent) {
-  dragActive.value = false
-  if (e.dataTransfer?.files[0]) selectedFile.value = e.dataTransfer.files[0]
+function handleFiles(files: File[]) {
+  if (files[0]) selectedFile.value = files[0]
 }
 
 async function handleGenerate() {
@@ -193,11 +185,10 @@ onMounted(() => { loadDecks() })
 .fc-tab { padding: 6px 14px; border: 1px solid #E8DDD0; border-radius: 6px; background: #FAFAF6; cursor: pointer; font-size: 13px; color: #8B7E74; }
 .fc-tab.active { background: #D97B2B; color: #fff; border-color: #D97B2B; }
 
-.fc-upload-area { border: 2px dashed #E8DDD0; border-radius: 8px; padding: 24px; text-align: center; transition: border-color 0.2s; }
-.fc-upload-area:hover, .fc-upload-area.drag-active { border-color: #D97B2B; }
-.fc-upload-prompt { cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 8px; color: #B8A898; font-size: 13px; }
+/* Upload prompt inner content */
+.fc-upload-prompt { display: flex; flex-direction: column; align-items: center; gap: 8px; color: #B8A898; font-size: 13px; }
 .fc-upload-hint { font-size: 11px; color: #C8B8A8; }
-.fc-file-info { display: flex; align-items: center; justify-content: center; gap: 12px; cursor: pointer; }
+.fc-file-info { display: flex; align-items: center; justify-content: center; gap: 12px; }
 .fc-file-name { font-size: 13px; color: #3D3028; font-weight: 500; }
 .fc-file-remove { font-size: 12px; color: #E85D5D; background: none; border: none; cursor: pointer; }
 

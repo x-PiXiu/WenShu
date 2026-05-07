@@ -32,6 +32,17 @@ public class AgentCard {
         return card;
     }
 
+    public static AgentCard create(String agentName, String description, String url, SkillRegistry registry) {
+        AgentCard card = new AgentCard();
+        card.name = agentName;
+        card.description = description;
+        card.url = url;
+        card.version = "1.0.0";
+        card.capabilities = new Capabilities(true, false, false);
+        card.skills = registry.toAgentSkills();
+        return card;
+    }
+
     // Inner types
     public record Capabilities(boolean streaming, boolean pushNotifications,
                                boolean stateTransitionHistory) {}

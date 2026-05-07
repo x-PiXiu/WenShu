@@ -12,6 +12,7 @@
           <div class="agent-meta">
             <span class="agent-name">{{ agent.name }}</span>
             <span v-if="agent.isDefault" class="default-badge">默认</span>
+            <span v-if="agent.toolNames && agent.toolNames.length > 0" class="tools-badge">{{ agent.toolNames.length }} 工具</span>
           </div>
           <p class="agent-desc">{{ agent.description || '暂无描述' }}</p>
         </div>
@@ -39,7 +40,22 @@
         </div>
         <div class="form-group">
           <label>系统提示词</label>
-          <textarea v-model="form.systemPrompt" rows="10" placeholder="定义智能体的角色、行为和回答风格..." />
+          <textarea v-model="form.systemPrompt" rows="8" placeholder="定义智能体的角色、行为和回答风格..." />
+        </div>
+        <div class="form-group">
+          <div class="tool-header">
+            <label>可用工具</label>
+            <span class="tool-hint">不勾选 = 使用全部工具</span>
+          </div>
+          <div v-if="toolsLoading" class="tool-loading">加载工具列表...</div>
+          <div v-else-if="availableTools.length === 0" class="tool-empty">暂无可用工具</div>
+          <div v-else class="tool-checkboxes">
+            <label v-for="tool in availableTools" :key="tool.name" class="tool-check">
+              <input type="checkbox" :value="tool.name" v-model="form.toolNames" />
+              <span class="tool-check-name">{{ tool.name }}</span>
+              <span v-if="tool.description" class="tool-check-desc">{{ tool.description }}</span>
+            </label>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="cancel-btn" @click="showForm = false">取消</button>
@@ -51,33 +67,58 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useAgents } from '../composables/useAgents'
 
-const { agents, createAgent, updateAgent, deleteAgent } = useAgents()
+const { agents, availableTools, loadAgents, loadAvailableTools, createAgent, updateAgent, deleteAgent } = useAgents()
 
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
-const form = ref({ name: '', description: '', systemPrompt: '', avatar: '🤖' })
+const toolsLoading = ref(false)
+const form = ref({ name: '', description: '', systemPrompt: '', avatar: '🤖', toolNames: [] as string[] })
 
-function startCreate() {
+onMounted(async () => {
+  await loadAgents()
+})
+
+async function startCreate() {
   editingId.value = null
-  form.value = { name: '', description: '', systemPrompt: '', avatar: '🤖' }
+  form.value = { name: '', description: '', systemPrompt: '', avatar: '🤖', toolNames: [] }
   showForm.value = true
+  await loadToolsIfNeeded()
 }
 
-function startEdit(agent: { id: string; name: string; description: string; systemPrompt: string; avatar: string }) {
+async function startEdit(agent: { id: string; name: string; description: string; systemPrompt: string; avatar: string; toolNames?: string[] | null }) {
   editingId.value = agent.id
-  form.value = { name: agent.name, description: agent.description, systemPrompt: agent.systemPrompt, avatar: agent.avatar }
+  form.value = {
+    name: agent.name,
+    description: agent.description,
+    systemPrompt: agent.systemPrompt,
+    avatar: agent.avatar,
+    toolNames: agent.toolNames ? [...agent.toolNames] : [],
+  }
   showForm.value = true
+  await loadToolsIfNeeded()
+}
+
+async function loadToolsIfNeeded() {
+  if (availableTools.value.length === 0) {
+    toolsLoading.value = true
+    await loadAvailableTools()
+    toolsLoading.value = false
+  }
 }
 
 async function handleSave() {
   if (!form.value.name.trim() || !form.value.systemPrompt.trim()) return
+  const payload = {
+    ...form.value,
+    toolNames: form.value.toolNames.length > 0 ? form.value.toolNames : null,
+  }
   if (editingId.value) {
-    await updateAgent(editingId.value, form.value)
+    await updateAgent(editingId.value, payload)
   } else {
-    await createAgent(form.value)
+    await createAgent(payload)
   }
   showForm.value = false
 }
@@ -114,6 +155,10 @@ async function handleDelete(agent: { id: string; isDefault: boolean }) {
   font-size: 11px; padding: 2px 8px; border-radius: 10px;
   background: #E8F5E9; color: #4CAF50; font-weight: 500;
 }
+.tools-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: #FFF3E0; color: #E8913A; font-weight: 500;
+}
 .agent-desc {
   font-size: 12px; color: #A89888; margin: 0; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -133,13 +178,13 @@ async function handleDelete(agent: { id: string; isDefault: boolean }) {
 }
 .modal {
   background: #FFFFFF; border-radius: 14px; padding: 24px;
-  width: 560px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
+  width: 600px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
   box-shadow: 0 8px 32px rgba(0,0,0,0.12);
 }
 .modal h3 { margin: 0 0 20px; font-size: 17px; color: #3D3028; }
 .form-group { margin-bottom: 14px; }
 .form-group label { display: block; font-size: 13px; font-weight: 500; color: #6B5E52; margin-bottom: 6px; }
-.form-group input, .form-group textarea {
+.form-group input[type="text"], .form-group textarea {
   width: 100%; padding: 8px 12px; border: 1px solid #E8DDD0;
   border-radius: 8px; font-size: 13px; color: #3D3028;
   font-family: inherit; transition: border-color 0.2s;
@@ -148,6 +193,29 @@ async function handleDelete(agent: { id: string; isDefault: boolean }) {
 .form-group input:focus, .form-group textarea:focus { outline: none; border-color: #D97B2B; }
 .form-group textarea { resize: vertical; line-height: 1.5; }
 .avatar-input { width: 80px !important; text-align: center; font-size: 20px; }
+
+.tool-header { display: flex; align-items: baseline; gap: 8px; }
+.tool-header label { margin-bottom: 0; }
+.tool-hint { font-size: 11px; color: #B8A898; }
+.tool-loading, .tool-empty { font-size: 12px; color: #B8A898; padding: 8px 0; }
+.tool-checkboxes {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-height: 180px; overflow-y: auto; padding: 8px;
+  background: #FAF7F2; border: 1px solid #E8DDD0; border-radius: 8px;
+}
+.tool-check {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 6px; border: 1px solid #E8DDD0;
+  background: #FFFFFF; cursor: pointer; font-size: 12px;
+  transition: all 0.15s; white-space: nowrap;
+}
+.tool-check:has(input:checked) {
+  border-color: #D97B2B; background: #FEF3E8;
+}
+.tool-check input { display: none; }
+.tool-check-name { font-weight: 500; color: #3D3028; }
+.tool-check-desc { display: none; }
+
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .cancel-btn {
   padding: 8px 20px; border-radius: 8px; border: 1px solid #E8DDD0;

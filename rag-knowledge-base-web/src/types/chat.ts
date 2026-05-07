@@ -53,8 +53,26 @@ export interface Agent {
   promptKey: string
   avatar: string
   isDefault: boolean
+  toolNames: string[] | null
   createdAt: number
   updatedAt: number
+}
+
+export interface ToolInfo {
+  name: string
+  description: string
+}
+
+export interface McpServerConfig {
+  name: string
+  sseUrl: string
+  enabled: boolean
+}
+
+export interface RemoteAgentConfig {
+  name: string
+  url: string
+  enabled: boolean
 }
 
 export interface LlmConfig {
@@ -65,6 +83,20 @@ export interface LlmConfig {
   temperature: number | null
   maxTokens: number | null
   streaming: boolean
+}
+
+export interface LlmProvider {
+  id: string
+  name: string
+  provider: string
+  baseUrl: string
+  apiKey: string
+  modelName: string
+  temperature: number | null
+  maxTokens: number | null
+  streaming: boolean
+  isDefault: boolean
+  createdAt: number
 }
 
 export interface EmbeddingConfig {
@@ -122,6 +154,8 @@ export interface AppSettings {
   documentTypes?: DocumentTypeConfig[]
   webSearch?: WebSearchConfig
   prompts?: Record<string, PromptEntry>
+  mcpServers?: McpServerConfig[]
+  remoteAgents?: RemoteAgentConfig[]
 }
 
 export interface BlogConfig {

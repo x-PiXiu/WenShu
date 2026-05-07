@@ -1,66 +1,102 @@
 <template>
   <div class="settings-page">
     <n-spin :show="loading">
-      <!-- Top row: LLM + Embedding side by side -->
-      <div class="grid-2col">
-        <!-- LLM Config -->
-        <div class="settings-card">
-          <div class="card-header">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8913A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5h1a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-5V5a3 3 0 0 0-3-3z"/></svg>
-            <span class="card-title">LLM 大语言模型</span>
-          </div>
-          <n-form label-placement="left" label-width="85">
-            <n-form-item label="Provider">
-              <n-select
-                :value="form.llm.provider"
-                :options="providerOptions"
-                @update:value="(v: string) => onProviderChange('llm', v)"
-              />
-              <template #feedback>
-                <span class="field-hint">选择 LLM 服务商，切换后自动填充 Base URL 和模型名</span>
-              </template>
-            </n-form-item>
-            <n-form-item label="Base URL">
-              <n-input v-model:value="form.llm.baseUrl" placeholder="http://localhost:11434/v1" />
-              <template #feedback>
-                <span class="field-hint">OpenAI 兼容的 API 地址，Ollama 为 http://localhost:11434/v1</span>
-              </template>
-            </n-form-item>
-            <n-form-item label="API Key">
-              <n-input v-model:value="form.llm.apiKey" type="password" show-password-on="click" placeholder="API Key" />
-              <template #feedback>
-                <span class="field-hint">服务商提供的认证密钥，Ollama 本地可填任意值</span>
-              </template>
-            </n-form-item>
-            <n-form-item label="Model">
-              <n-input v-model:value="form.llm.modelName" placeholder="qwen2.5" />
-              <template #feedback>
-                <span class="field-hint">模型标识，如 qwen2.5、MiniMax-M2.5、gpt-4o</span>
-              </template>
-            </n-form-item>
-            <n-form-item label="Temperature">
-              <n-slider v-model:value="llmTemp" :min="0" :max="2" :step="0.1" />
-              <template #feedback>
-                <span class="field-hint">控制回答的随机性，0 = 确定精准，2 = 发散创意</span>
-              </template>
-            </n-form-item>
-            <n-form-item label="Max Tokens">
-              <n-input-number v-model:value="llmTokens" :min="128" :max="32768" :step="256" />
-              <template #feedback>
-                <span class="field-hint">单次回答的最大输出长度，越长回答越详细但耗时更久</span>
-              </template>
-            </n-form-item>
-            <n-form-item label="流式输出">
-              <n-switch v-model:value="form.llm.streaming" />
-              <template #feedback>
-                <span class="field-hint">开启后逐字实时输出回答，支持思考过程展示（需模型支持）</span>
-              </template>
-            </n-form-item>
-          </n-form>
+      <!-- Top row: LLM Provider Management (full width) -->
+      <div class="settings-card llm-provider-card">
+        <div class="card-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8913A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5h1a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-5V5a3 3 0 0 0-3-3z"/></svg>
+          <span class="card-title">LLM 大语言模型</span>
+          <button class="llm-add-btn" @click="startCreateProvider">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            添加
+          </button>
         </div>
 
-        <!-- Embedding Config -->
-        <div class="settings-card">
+        <!-- Provider grid (cards) -->
+        <div class="llm-provider-grid">
+          <div v-for="p in providers" :key="p.id"
+               :class="['llm-provider-card-item', { active: selectedProviderId === p.id, current: p.isDefault }]"
+               @click="selectProvider(p.id)">
+            <div class="llm-card-top">
+              <span :class="['llm-provider-icon', p.provider]">{{ providerIcon(p.provider) }}</span>
+              <div class="llm-card-title-row">
+                <span class="llm-card-name">{{ p.name }}</span>
+                <span v-if="p.isDefault" class="llm-current-tag">使用中</span>
+              </div>
+            </div>
+            <div class="llm-card-detail">
+              <span class="llm-card-label">{{ p.provider }}</span>
+              <span class="llm-card-divider">&middot;</span>
+              <span class="llm-card-model">{{ p.modelName }}</span>
+            </div>
+          </div>
+          <div class="llm-provider-card-item llm-add-card" @click="startCreateProvider">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C8B8A8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span>添加新配置</span>
+          </div>
+        </div>
+
+        <!-- Provider edit form (collapsible) -->
+        <transition name="llm-slide">
+          <div v-if="selectedProviderId || isCreatingProvider" class="llm-edit-section">
+            <div class="llm-edit-header">
+              <span class="llm-edit-title">{{ isCreatingProvider ? '新建配置' : '编辑配置' }}</span>
+              <button class="llm-edit-close" @click="cancelProviderForm">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div class="llm-edit-form-grid">
+              <n-form label-placement="left" label-width="85">
+                <n-form-item label="名称">
+                  <n-input v-model:value="providerForm.name" placeholder="例如：Ollama 本地" />
+                </n-form-item>
+                <n-form-item label="Provider">
+                  <n-select :value="providerForm.provider" :options="providerOptions"
+                            @update:value="(v: string) => onProviderFormChange(v)" />
+                </n-form-item>
+                <n-form-item label="Base URL">
+                  <n-input v-model:value="providerForm.baseUrl" placeholder="http://localhost:11434/v1" />
+                </n-form-item>
+                <n-form-item label="API Key">
+                  <n-input v-model:value="providerForm.apiKey" type="password" show-password-on="click" placeholder="API Key" />
+                </n-form-item>
+                <n-form-item label="Model">
+                  <n-input v-model:value="providerForm.modelName" placeholder="qwen2.5" />
+                </n-form-item>
+                <n-form-item label="Temperature">
+                  <n-slider v-model:value="providerForm.temperature" :min="0" :max="2" :step="0.1" />
+                </n-form-item>
+                <n-form-item label="Max Tokens">
+                  <n-input-number v-model:value="providerForm.maxTokens" :min="128" :max="32768" :step="256" />
+                </n-form-item>
+                <n-form-item label="流式输出">
+                  <n-switch v-model:value="providerForm.streaming" />
+                </n-form-item>
+              </n-form>
+            </div>
+            <div class="llm-edit-actions">
+              <template v-if="isCreatingProvider">
+                <button class="llm-action-btn primary" @click="handleCreateProvider">创建</button>
+                <button class="llm-action-btn" @click="cancelProviderForm">取消</button>
+              </template>
+              <template v-else>
+                <button class="llm-action-btn primary" @click="handleSaveProvider">保存</button>
+                <button v-if="selectedProvider && !selectedProvider.isDefault"
+                        class="llm-action-btn activate" @click="handleActivateProvider">
+                  设为当前
+                </button>
+                <button v-if="selectedProvider && !selectedProvider.isDefault"
+                        class="llm-action-btn danger" @click="handleDeleteProvider">
+                  删除
+                </button>
+              </template>
+            </div>
+          </div>
+        </transition>
+      </div>
+
+      <!-- Embedding Config (full width below LLM) -->
+      <div class="settings-card" style="margin-bottom: 16px">
           <div class="card-header">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E8913A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
             <span class="card-title">Embedding 向量模型</span>
@@ -96,7 +132,6 @@
             </n-form-item>
           </n-form>
         </div>
-      </div>
 
       <!-- Middle row: Vector Store + RAG Parameters side by side -->
       <div class="grid-2col">
@@ -319,11 +354,6 @@
       </div>
 
 
-      <!-- Agent Persona Management -->
-      <div class="settings-card" style="margin-bottom: 16px">
-        <AgentManager />
-      </div>
-
       <!-- Security: Admin Password -->
       <div class="settings-card" style="margin-bottom: 16px">
         <div class="card-header">
@@ -362,7 +392,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import {
   NForm, NFormItem, NInput, NInputNumber, NSelect, NSlider,
   NSpin, NSwitch,
@@ -371,10 +401,11 @@ import { useSettings } from '../composables/useSettings'
 import { PROVIDER_PRESETS, EMBEDDING_PRESETS } from '../types/chat'
 import type { AppSettings, DocumentTypeConfig, PromptEntry } from '../types/chat'
 import { useAdmin } from '../composables/useAdmin'
-import AgentManager from './AgentManager.vue'
+import { useLlmProviders } from '../composables/useLlmProviders'
 
 const { settings, loading, saving, message, fetchSettings, saveSettings, reindex } = useSettings()
 const { logout } = useAdmin()
+const { providers, activeProvider, loadProviders, createProvider, updateProvider, deleteProvider, activateProvider } = useLlmProviders()
 
 const form = reactive<AppSettings>({
   llm: { provider: 'ollama', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', modelName: 'qwen2.5', temperature: 0.7, maxTokens: 2048, streaming: true },
@@ -401,6 +432,121 @@ const newTypeLabel = ref('')
 const showWsKey = ref(false)
 const promptExpanded = ref(false)
 const promptDefaults = ref<Record<string, PromptEntry> | null>(null)
+
+// Provider management state
+const selectedProviderId = ref<string | null>(null)
+const isCreatingProvider = ref(false)
+const providerForm = reactive({
+  name: '', provider: 'ollama', baseUrl: 'http://localhost:11434/v1',
+  apiKey: 'ollama', modelName: 'qwen2.5',
+  temperature: 0.7, maxTokens: 2048, streaming: true,
+})
+
+const selectedProvider = computed(() =>
+  selectedProviderId.value ? providers.value.find(p => p.id === selectedProviderId.value) : null
+)
+
+function selectProvider(id: string) {
+  isCreatingProvider.value = false
+  selectedProviderId.value = id
+  const p = providers.value.find(p => p.id === id)
+  if (p) {
+    providerForm.name = p.name
+    providerForm.provider = p.provider
+    providerForm.baseUrl = p.baseUrl
+    providerForm.apiKey = p.apiKey
+    providerForm.modelName = p.modelName
+    providerForm.temperature = p.temperature ?? 0.7
+    providerForm.maxTokens = p.maxTokens ?? 2048
+    providerForm.streaming = p.streaming
+  }
+}
+
+function startCreateProvider() {
+  isCreatingProvider.value = true
+  selectedProviderId.value = null
+  providerForm.name = ''
+  providerForm.provider = 'ollama'
+  providerForm.baseUrl = 'http://localhost:11434/v1'
+  providerForm.apiKey = 'ollama'
+  providerForm.modelName = 'qwen2.5'
+  providerForm.temperature = 0.7
+  providerForm.maxTokens = 2048
+  providerForm.streaming = true
+}
+
+function cancelProviderForm() {
+  isCreatingProvider.value = false
+  selectedProviderId.value = null
+}
+
+function onProviderFormChange(provider: string) {
+  const preset = PROVIDER_PRESETS[provider]
+  if (preset) {
+    providerForm.provider = preset.provider!
+    providerForm.baseUrl = preset.baseUrl!
+    providerForm.modelName = preset.modelName!
+    if (preset.apiKey !== undefined) providerForm.apiKey = preset.apiKey
+  }
+}
+
+async function handleCreateProvider() {
+  const result = await createProvider({
+    name: providerForm.name || providerForm.provider,
+    provider: providerForm.provider,
+    baseUrl: providerForm.baseUrl,
+    apiKey: providerForm.apiKey,
+    modelName: providerForm.modelName,
+    temperature: providerForm.temperature,
+    maxTokens: providerForm.maxTokens,
+    streaming: providerForm.streaming,
+  })
+  if (result) {
+    isCreatingProvider.value = false
+    selectProvider(result.id)
+  }
+}
+
+async function handleSaveProvider() {
+  if (!selectedProviderId.value) return
+  await updateProvider(selectedProviderId.value, {
+    name: providerForm.name,
+    provider: providerForm.provider,
+    baseUrl: providerForm.baseUrl,
+    apiKey: providerForm.apiKey,
+    modelName: providerForm.modelName,
+    temperature: providerForm.temperature,
+    maxTokens: providerForm.maxTokens,
+    streaming: providerForm.streaming,
+  })
+  await fetchSettings()
+}
+
+async function handleActivateProvider() {
+  if (!selectedProviderId.value) return
+  const ok = await activateProvider(selectedProviderId.value)
+  if (ok) {
+    await fetchSettings()
+  }
+}
+
+async function handleDeleteProvider() {
+  if (!selectedProviderId.value) return
+  if (!confirm('确定删除此 LLM 配置？')) return
+  const ok = await deleteProvider(selectedProviderId.value)
+  if (ok) {
+    selectedProviderId.value = null
+  }
+}
+
+function providerIcon(provider: string): string {
+  switch (provider) {
+    case 'ollama': return '🦙'
+    case 'openai': return '✦'
+    case 'minimax': return '◈'
+    default: return '⚙'
+  }
+}
 
 const promptCategories = ref([
   { key: 'core', label: '核心提示词', expanded: true, keys: ['rag_qa', 'blog_qa', 'flashcard_generate'] },
@@ -523,7 +669,8 @@ watch(llmTemp, (v) => { form.llm.temperature = v })
 watch(llmTokens, (v) => { form.llm.maxTokens = v })
 
 async function handleSave() {
-  await saveSettings(form)
+  const payload = { ...form }
+  await saveSettings(payload)
 }
 
 async function handleReindex() {
@@ -533,6 +680,7 @@ async function handleReindex() {
 
 onMounted(() => {
   fetchSettings()
+  loadProviders()
 })
 </script>
 
@@ -865,4 +1013,114 @@ onMounted(() => {
 .prompt-var-hint code { background: #F0E8DD; padding: 1px 5px; border-radius: 3px; font-size: 10px; color: #8B7E74; font-family: monospace; }
 .prompt-section .info-tip { margin: 8px 18px 10px; }
 .prompt-section .info-tip code { background: #F0E8DD; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #8B6914; font-family: monospace; }
+
+/* LLM Provider Management */
+.llm-provider-card { margin-bottom: 16px; }
+.llm-add-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: auto; padding: 5px 14px; border-radius: 8px;
+  border: 1px dashed #D97B2B; background: #FEF3E8;
+  color: #D97B2B; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s;
+}
+.llm-add-btn:hover { background: #FDE8D4; border-style: solid; }
+
+/* Provider card grid */
+.llm-provider-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px; padding: 16px 18px;
+}
+.llm-provider-card-item {
+  position: relative; padding: 14px; border-radius: 10px;
+  border: 1.5px solid #E8DDD0; background: #FAFAF6;
+  cursor: pointer; transition: all 0.2s;
+}
+.llm-provider-card-item:hover { border-color: #D4C0A8; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+.llm-provider-card-item.active { border-color: #D97B2B; background: #FEF3E8; box-shadow: 0 0 0 1px #D97B2B; }
+.llm-provider-card-item.current { border-color: #4CAF50; }
+.llm-provider-card-item.current::after {
+  content: ''; position: absolute; top: 8px; right: 8px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #4CAF50;
+}
+.llm-add-card {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; border-style: dashed; color: #C8B8A8; font-size: 12px;
+}
+.llm-add-card:hover { border-color: #D97B2B; color: #D97B2B; }
+
+.llm-card-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.llm-provider-icon {
+  width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; background: #F0E8DD;
+}
+.llm-provider-icon.ollama { background: #FEF3E8; }
+.llm-provider-icon.openai { background: #E3F2FD; }
+.llm-provider-icon.minimax { background: #FFF3E0; }
+.llm-card-title-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.llm-card-name {
+  font-size: 13px; font-weight: 600; color: #3D3028;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.llm-current-tag {
+  font-size: 10px; font-weight: 700; color: #4CAF50;
+  background: #E8F5E9; padding: 2px 6px; border-radius: 4px;
+  flex-shrink: 0; letter-spacing: 0.3px;
+}
+.llm-card-detail {
+  font-size: 12px; color: #A89888; display: flex; align-items: center; gap: 4px;
+}
+.llm-card-label {
+  padding: 1px 6px; border-radius: 4px; background: #F0E8DD; color: #8B7E74;
+  font-size: 10px; font-weight: 600; text-transform: uppercase;
+}
+.llm-card-divider { color: #D4C8BA; }
+.llm-card-model { color: #8B7E74; }
+
+/* Edit section (slide down) */
+.llm-edit-section {
+  border-top: 1px solid #F0E8DD; background: #FEFCFA;
+}
+.llm-edit-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 18px; border-bottom: 1px solid #F0E8DD;
+}
+.llm-edit-title { font-size: 13px; font-weight: 600; color: #3D3028; }
+.llm-edit-close {
+  width: 28px; height: 28px; border-radius: 6px;
+  border: none; background: none; cursor: pointer;
+  color: #B8A898; display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.llm-edit-close:hover { background: #FFEBEE; color: #E85D5D; }
+.llm-edit-form-grid { padding: 0 18px; }
+.llm-edit-actions {
+  display: flex; gap: 8px; padding: 12px 18px;
+  border-top: 1px solid #F0E8DD;
+}
+.llm-action-btn {
+  padding: 6px 18px; border-radius: 6px; border: 1px solid #E8DDD0;
+  background: #FAF7F2; color: #8B7E74; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all 0.2s;
+}
+.llm-action-btn.primary {
+  background: #D97B2B; color: #fff; border-color: #D97B2B;
+}
+.llm-action-btn.primary:hover { background: #C86A20; }
+.llm-action-btn.activate { border-color: #4CAF50; color: #4CAF50; }
+.llm-action-btn.activate:hover { background: #E8F5E9; }
+.llm-action-btn.danger { border-color: #E85D5D; color: #E85D5D; }
+.llm-action-btn.danger:hover { background: #FFEBEE; }
+
+/* Slide transition */
+.llm-slide-enter-active { transition: all 0.25s ease-out; }
+.llm-slide-leave-active { transition: all 0.15s ease-in; }
+.llm-slide-enter-from, .llm-slide-leave-to {
+  opacity: 0; max-height: 0; overflow: hidden;
+}
+.llm-slide-enter-to, .llm-slide-leave-from {
+  opacity: 1; max-height: 600px;
+}
+
 </style>

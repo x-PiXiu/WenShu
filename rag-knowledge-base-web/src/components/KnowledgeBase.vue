@@ -33,32 +33,19 @@
           <span class="type-hint" v-else>智能识别文档类型，自动选择最优分块策略</span>
         </div>
 
-        <div
-          class="drop-zone"
-          :class="{ dragging: isDragging, uploading: uploading }"
-          @dragover.prevent="isDragging = true"
-          @dragleave.prevent="isDragging = false"
-          @drop.prevent="handleDrop"
-          @click="triggerFileInput"
-        >
-          <input
-            ref="fileInputRef"
-            type="file"
-            multiple
-            accept=".pdf,.docx,.md,.txt"
-            style="display: none"
-            @change="handleFileSelect"
-          />
-          <template v-if="!uploading">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#C8B8A8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
-            <p class="drop-text">拖拽文件到此处，或点击选择</p>
-            <p class="drop-hint">支持 PDF、DOCX、MD、TXT 格式，将以「{{ currentTypePreview.label }}」策略分块</p>
+        <FileDropZone :disabled="uploading" multiple @select="uploadFiles">
+          <template #default>
+            <template v-if="!uploading">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#C8B8A8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+              <p class="drop-text">拖拽文件到此处，或点击选择</p>
+              <p class="drop-hint">支持 PDF、DOCX、MD、TXT 格式，将以「{{ currentTypePreview.label }}」策略分块</p>
+            </template>
+            <template v-else>
+              <div class="upload-spinner"></div>
+              <p class="drop-text">正在上传并向量化...</p>
+            </template>
           </template>
-          <template v-else>
-            <div class="upload-spinner"></div>
-            <p class="drop-text">正在上传并向量化...</p>
-          </template>
-        </div>
+        </FileDropZone>
         <div v-if="uploadResult" class="upload-result">
           <div v-if="uploadResult.indexed.length" class="result-success">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -128,6 +115,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import FileDropZone from './common/FileDropZone.vue'
 
 interface DocTypeInfo {
   name: string
@@ -157,10 +145,8 @@ interface UploadResult {
 
 const documents = ref<DocumentInfo[]>([])
 const uploading = ref(false)
-const isDragging = ref(false)
 const uploadResult = ref<UploadResult | null>(null)
 const stats = ref<{ documentCount: number; segmentCount: number; embeddingModel: string } | null>(null)
-const fileInputRef = ref<HTMLInputElement>()
 const selectedType = ref('AUTO')
 const documentTypes = ref<DocTypeInfo[]>([])
 
@@ -198,11 +184,7 @@ async function loadStats() {
   } catch { /* ignore */ }
 }
 
-function triggerFileInput() {
-  fileInputRef.value?.click()
-}
-
-async function uploadFiles(files: FileList | File[]) {
+async function uploadFiles(files: File[]) {
   if (files.length === 0) return
   uploading.value = true
   uploadResult.value = null
@@ -230,18 +212,7 @@ async function uploadFiles(files: FileList | File[]) {
     uploadResult.value = { indexed: [], failed: [e.message], documentCount: 0, segmentCount: 0 }
   } finally {
     uploading.value = false
-    if (fileInputRef.value) fileInputRef.value.value = ''
   }
-}
-
-function handleFileSelect(e: Event) {
-  const input = e.target as HTMLInputElement
-  if (input.files) uploadFiles(input.files)
-}
-
-function handleDrop(e: DragEvent) {
-  isDragging.value = false
-  if (e.dataTransfer?.files) uploadFiles(e.dataTransfer.files)
 }
 
 async function handleDelete(filename: string) {
@@ -381,22 +352,7 @@ onMounted(() => {
   margin-left: auto;
 }
 
-/* Drop Zone */
-.drop-zone {
-  border: 2px dashed #D4C8BA;
-  border-radius: 12px;
-  padding: 36px 24px;
-  text-align: center;
-  cursor: pointer;
-  transition: all 0.25s;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.drop-zone:hover { border-color: #D97B2B; background: #FEF3E8; }
-.drop-zone.dragging { border-color: #D97B2B; background: #FEF3E8; }
-.drop-zone.uploading { border-color: #D97B2B; background: #FFF9F2; pointer-events: none; }
+/* Drop Zone inner content */
 .drop-text { font-size: 14px; color: #6B5E52; margin: 0; }
 .drop-hint { font-size: 12px; color: #B8A898; margin: 0; }
 

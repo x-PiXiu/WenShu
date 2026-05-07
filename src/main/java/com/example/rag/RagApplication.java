@@ -9,7 +9,10 @@ import com.example.rag.blog.BlogStore;
 import com.example.rag.blog.MediaStore;
 import com.example.rag.chat.AgentStore;
 import com.example.rag.chat.ChatStore;
+import com.example.rag.graph.KnowledgeGraphExtractor;
+import com.example.rag.graph.KnowledgeGraphStore;
 import com.example.rag.config.AppConfiguration;
+import com.example.rag.config.LlmProviderStore;
 import com.example.rag.eval.EvalResultStore;
 import com.example.rag.eval.EvalResultStore.CaseSummary;
 import com.example.rag.eval.EvalResultStore.EvalResult;
@@ -82,6 +85,12 @@ public class RagApplication {
     private static com.example.rag.tools.ToolEngine toolEngine;
     private static com.example.rag.flashcard.FlashcardStore flashcardStore;
     private static com.example.rag.flashcard.FlashcardGenerator flashcardGenerator;
+    private static com.example.rag.a2a.SkillRegistry skillRegistry;
+    private static com.example.rag.mcp.McpClientConnector mcpClient;
+    private static com.example.rag.a2a.AgentDiscovery agentDiscovery;
+    private static KnowledgeGraphStore graphStore;
+    private static KnowledgeGraphExtractor graphExtractor;
+    private static LlmProviderStore llmProviderStore;
 
     // Active streaming tasks: conversationId -> AbortController
     private static final ConcurrentHashMap<String, StreamAbortController> activeStreams = new ConcurrentHashMap<>();
@@ -131,6 +140,7 @@ public class RagApplication {
         taskManager = new TaskManager();
         chatStore = new ChatStore();
         agentStore = new AgentStore(config);
+        llmProviderStore = new LlmProviderStore(config);
 
         // 4.1 Memory store
         memoryStore = new MemoryStore();
@@ -141,18 +151,21 @@ public class RagApplication {
         ragTools.setMemoryStore(memoryStore);
         ragTools.setChatStore(chatStore);
 
+        // 4.2.1 Blog store (for blog tools)
+        blogStore = new BlogStore();
+        blogIndexer = new BlogIndexer(ragService, blogStore);
+        blogStore.setBlogIndexer(blogIndexer);
+        ragTools.setBlogStore(blogStore);
+
         // 4.2 Schedule hourly memory decay recalculation
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
                 .scheduleAtFixedRate(() -> {
                     try { memoryStore.recalculateDecay(); } catch (Exception ignored) {}
                 }, 1, 60, java.util.concurrent.TimeUnit.MINUTES);
 
-        blogStore = new BlogStore();
-        blogIndexer = new BlogIndexer(ragService, blogStore);
-        blogStore.setBlogIndexer(blogIndexer);
         mediaStore = new MediaStore();
 
-        // 4.1 Re-index published blog articles (InMemory vector store loses data on restart)
+        // 4.3 Re-index published blog articles (InMemory vector store loses data on restart)
         try {
             var publishedArticles = blogStore.listAllPublished();
             if (!publishedArticles.isEmpty()) {
@@ -173,13 +186,50 @@ public class RagApplication {
         flashcardGenerator = new com.example.rag.flashcard.FlashcardGenerator(ragService);
         System.out.println("[INIT] Flashcard store initialized");
 
+        // 4.3.1 Knowledge Graph
+        graphStore = new KnowledgeGraphStore();
+        graphExtractor = new KnowledgeGraphExtractor(ragService);
+        System.out.println("[INIT] Knowledge graph store initialized");
+
         int port = config.getServer().port;
 
+        // 4.4 Skill Registry + Agent Card
+        skillRegistry = new com.example.rag.a2a.SkillRegistry(ragService, toolEngine);
         agentCard = AgentCard.create(
                 config.getA2a().agentName,
                 config.getA2a().agentDescription,
-                "http://localhost:" + port + "/a2a/v1"
+                "http://localhost:" + port + "/a2a/v1",
+                skillRegistry
         );
+        System.out.println("[INIT] Skill registry initialized with " + skillRegistry.listSkills().size() + " skills");
+
+        // 4.5 MCP Client — connect to external MCP servers
+        mcpClient = new com.example.rag.mcp.McpClientConnector();
+        List<AppConfiguration.McpServerConfig> mcpServers = config.getMcpServers();
+        if (!mcpServers.isEmpty()) {
+            try {
+                mcpClient.connectAll(mcpServers);
+                List<dev.langchain4j.agent.tool.ToolSpecification> mcpTools = mcpClient.getAllToolSpecifications();
+                if (!mcpTools.isEmpty()) {
+                    System.out.println("[INIT] MCP Client connected: " + mcpTools.size() + " external tools available");
+                }
+            } catch (Exception e) {
+                System.err.println("[WARN] MCP Client initialization failed: " + e.getMessage());
+            }
+        }
+
+        // 4.6 A2A Agent Discovery — discover remote agents
+        agentDiscovery = new com.example.rag.a2a.AgentDiscovery(skillRegistry);
+        skillRegistry.setAgentDiscovery(agentDiscovery);
+        List<AppConfiguration.RemoteAgentConfig> remoteAgents = config.getRemoteAgents();
+        if (!remoteAgents.isEmpty()) {
+            try {
+                agentDiscovery.discoverAll(remoteAgents);
+                System.out.println("[INIT] Agent discovery completed: " + agentDiscovery.listDiscovered().size() + " remote agents");
+            } catch (Exception e) {
+                System.err.println("[WARN] Agent discovery failed: " + e.getMessage());
+            }
+        }
 
         // 5. Start Javalin server
         Javalin app = Javalin.create(javalinConfig -> {
@@ -344,7 +394,16 @@ public class RagApplication {
                 PromptRegistry.init(config);
             }
 
+            if (newConfig.getMcpServers() != null) {
+                config.setMcpServers(newConfig.getMcpServers());
+            }
+
+            if (newConfig.getRemoteAgents() != null) {
+                config.setRemoteAgents(newConfig.getRemoteAgents());
+            }
+
             config.save();
+            llmProviderStore.syncActiveFromConfig();
             ragService.rebuildModels();
             ctx.json(Map.of("status", "ok", "message", "Settings saved and models rebuilt"));
         });
@@ -358,6 +417,73 @@ public class RagApplication {
                         "segments", stats.segmentCount()));
             } catch (Exception e) {
                 ctx.status(500).json(Map.of("error", "Reindex failed: " + e.getMessage()));
+            }
+        });
+
+        // ===== LLM Provider Management API =====
+        app.get("/api/llm-providers", ctx -> {
+            ctx.json(llmProviderStore.list());
+        });
+
+        app.get("/api/llm-providers/active", ctx -> {
+            LlmProviderStore.Provider active = llmProviderStore.getActive();
+            if (active != null) ctx.json(active);
+            else ctx.status(404).json(Map.of("error", "No active provider"));
+        });
+
+        app.post("/api/llm-providers", ctx -> {
+            var body = MAPPER.readValue(ctx.body(), MAP_TYPE);
+            String name = (String) body.getOrDefault("name", "New Provider");
+            String provider = (String) body.getOrDefault("provider", "ollama");
+            String baseUrl = (String) body.getOrDefault("baseUrl", "");
+            String apiKey = (String) body.getOrDefault("apiKey", "");
+            String modelName = (String) body.getOrDefault("modelName", "");
+            Double temperature = body.get("temperature") != null ? ((Number) body.get("temperature")).doubleValue() : null;
+            Integer maxTokens = body.get("maxTokens") != null ? ((Number) body.get("maxTokens")).intValue() : null;
+            boolean streaming = body.get("streaming") == null || Boolean.TRUE.equals(body.get("streaming"));
+            LlmProviderStore.Provider created = llmProviderStore.create(name, provider, baseUrl, apiKey, modelName, temperature, maxTokens, streaming);
+            ctx.status(201).json(created);
+        });
+
+        app.put("/api/llm-providers/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            var body = MAPPER.readValue(ctx.body(), MAP_TYPE);
+            String name = (String) body.getOrDefault("name", "");
+            String provider = (String) body.getOrDefault("provider", "ollama");
+            String baseUrl = (String) body.getOrDefault("baseUrl", "");
+            String apiKey = (String) body.getOrDefault("apiKey", "");
+            String modelName = (String) body.getOrDefault("modelName", "");
+            Double temperature = body.get("temperature") != null ? ((Number) body.get("temperature")).doubleValue() : null;
+            Integer maxTokens = body.get("maxTokens") != null ? ((Number) body.get("maxTokens")).intValue() : null;
+            boolean streaming = body.get("streaming") == null || Boolean.TRUE.equals(body.get("streaming"));
+            try {
+                LlmProviderStore.Provider updated = llmProviderStore.update(id, name, provider, baseUrl, apiKey, modelName, temperature, maxTokens, streaming);
+                if (updated.isDefault()) ragService.rebuildModels();
+                ctx.json(updated);
+            } catch (RuntimeException e) {
+                ctx.status(404).json(Map.of("error", e.getMessage()));
+            }
+        });
+
+        app.delete("/api/llm-providers/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            try {
+                llmProviderStore.delete(id);
+                ctx.json(Map.of("status", "ok"));
+            } catch (RuntimeException e) {
+                ctx.status(400).json(Map.of("error", e.getMessage()));
+            }
+        });
+
+        app.post("/api/llm-providers/{id}/activate", ctx -> {
+            String id = ctx.pathParam("id");
+            try {
+                LlmProviderStore.Provider activated = llmProviderStore.setActive(id);
+                ragService.rebuildModels();
+                System.out.println("[LLM] Switched to provider: " + activated.name() + " (" + activated.modelName() + ")");
+                ctx.json(activated);
+            } catch (RuntimeException e) {
+                ctx.status(404).json(Map.of("error", e.getMessage()));
             }
         });
 
@@ -389,59 +515,66 @@ public class RagApplication {
             List<AgentStore.Agent> agents = agentStore.list();
             List<Map<String, Object>> response = agents.stream().map(a -> {
                 String resolved = PromptRegistry.getTemplate(a.promptKey());
-                return Map.<String, Object>of(
-                        "id", a.id(), "name", a.name(), "description", a.description(),
-                        "systemPrompt", resolved != null ? resolved : "",
-                        "promptKey", a.promptKey(),
-                        "avatar", a.avatar(), "isDefault", a.isDefault(),
-                        "createdAt", a.createdAt(), "updatedAt", a.updatedAt()
-                );
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", a.id());
+                m.put("name", a.name());
+                m.put("description", a.description());
+                m.put("systemPrompt", resolved != null ? resolved : "");
+                m.put("promptKey", a.promptKey());
+                m.put("avatar", a.avatar());
+                m.put("isDefault", a.isDefault());
+                m.put("toolNames", a.toolNames());
+                m.put("createdAt", a.createdAt());
+                m.put("updatedAt", a.updatedAt());
+                return m;
             }).toList();
             ctx.json(response);
         });
 
         app.post("/api/agents", ctx -> {
-            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
-            String name = body.get("name");
-            String description = body.getOrDefault("description", "");
-            String systemPrompt = body.get("systemPrompt");
-            String avatar = body.getOrDefault("avatar", "");
-            if (name == null || name.isBlank() || systemPrompt == null || systemPrompt.isBlank()) {
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String name = root.path("name").asText("");
+            String description = root.path("description").asText("");
+            String systemPrompt = root.path("systemPrompt").asText("");
+            String avatar = root.path("avatar").asText("");
+            if (name.isBlank() || systemPrompt.isBlank()) {
                 ctx.status(400).json(Map.of("error", "name and systemPrompt are required"));
                 return;
             }
-            AgentStore.Agent agent = agentStore.create(name, description, systemPrompt, avatar);
+            List<String> toolNames = parseToolNamesFromJson(root.path("toolNames"));
+            AgentStore.Agent agent = agentStore.create(name, description, systemPrompt, avatar, toolNames.isEmpty() ? null : toolNames);
             String resolved = PromptRegistry.getTemplate(agent.promptKey());
-            ctx.json(Map.of(
-                    "id", agent.id(), "name", agent.name(), "description", agent.description(),
-                    "systemPrompt", resolved != null ? resolved : "",
-                    "promptKey", agent.promptKey(),
-                    "avatar", agent.avatar(), "isDefault", agent.isDefault(),
-                    "createdAt", agent.createdAt(), "updatedAt", agent.updatedAt()
-            ));
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", agent.id()); m.put("name", agent.name()); m.put("description", agent.description());
+            m.put("systemPrompt", resolved != null ? resolved : ""); m.put("promptKey", agent.promptKey());
+            m.put("avatar", agent.avatar()); m.put("isDefault", agent.isDefault());
+            m.put("toolNames", agent.toolNames());
+            m.put("createdAt", agent.createdAt()); m.put("updatedAt", agent.updatedAt());
+            ctx.json(m);
         });
 
         app.put("/api/agents/{id}", ctx -> {
             String id = ctx.pathParam("id");
-            Map<String, String> body = MAPPER.readValue(ctx.body(), STRING_MAP_TYPE);
-            String name = body.get("name");
-            String description = body.getOrDefault("description", "");
-            String systemPrompt = body.get("systemPrompt");
-            String avatar = body.getOrDefault("avatar", "");
-            if (name == null || name.isBlank() || systemPrompt == null || systemPrompt.isBlank()) {
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String name = root.path("name").asText("");
+            String description = root.path("description").asText("");
+            String systemPrompt = root.path("systemPrompt").asText("");
+            String avatar = root.path("avatar").asText("");
+            if (name.isBlank() || systemPrompt.isBlank()) {
                 ctx.status(400).json(Map.of("error", "name and systemPrompt are required"));
                 return;
             }
+            List<String> toolNames = parseToolNamesFromJson(root.path("toolNames"));
             try {
-                AgentStore.Agent agent = agentStore.update(id, name, description, systemPrompt, avatar);
+                AgentStore.Agent agent = agentStore.update(id, name, description, systemPrompt, avatar, toolNames.isEmpty() ? null : toolNames);
                 String resolved = PromptRegistry.getTemplate(agent.promptKey());
-                ctx.json(Map.of(
-                        "id", agent.id(), "name", agent.name(), "description", agent.description(),
-                        "systemPrompt", resolved != null ? resolved : "",
-                        "promptKey", agent.promptKey(),
-                        "avatar", agent.avatar(), "isDefault", agent.isDefault(),
-                        "createdAt", agent.createdAt(), "updatedAt", agent.updatedAt()
-                ));
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", agent.id()); m.put("name", agent.name()); m.put("description", agent.description());
+                m.put("systemPrompt", resolved != null ? resolved : ""); m.put("promptKey", agent.promptKey());
+                m.put("avatar", agent.avatar()); m.put("isDefault", agent.isDefault());
+                m.put("toolNames", agent.toolNames());
+                m.put("createdAt", agent.createdAt()); m.put("updatedAt", agent.updatedAt());
+                ctx.json(m);
             } catch (RuntimeException e) {
                 ctx.status(404).json(Map.of("error", e.getMessage()));
             }
@@ -455,6 +588,14 @@ public class RagApplication {
             } catch (RuntimeException e) {
                 ctx.status(400).json(Map.of("error", e.getMessage()));
             }
+        });
+
+        // 工具列表 API（供 Agent 编辑页勾选用）
+        app.get("/api/tools", ctx -> {
+            List<Map<String, String>> tools = toolEngine.getSpecifications().stream()
+                    .map(spec -> Map.of("name", spec.name(), "description", spec.description() != null ? spec.description() : ""))
+                    .toList();
+            ctx.json(tools);
         });
 
         // ===== Conversation API =====
@@ -537,6 +678,9 @@ public class RagApplication {
 
         // ===== Flashcard Routes =====
         registerFlashcardRoutes(app);
+
+        // ===== Knowledge Graph Routes =====
+        registerGraphRoutes(app);
     }
 
     private static void registerBlogRoutes(Javalin app) {
@@ -1070,7 +1214,8 @@ public class RagApplication {
 
             // Get RAG answer with conversation context
             String agentPrompt = resolveAgentPrompt(agentId);
-            RagService.RagAnswer answer = ragService.askWithContext(question, history, agentPrompt);
+            java.util.Set<String> toolNames = resolveAgentToolNames(agentId);
+            RagService.RagAnswer answer = ragService.askWithContext(question, history, agentPrompt, toolNames);
 
             // Save user message + assistant message
             chatStore.saveMessage(conversationId, "user", question, null);
@@ -1178,7 +1323,8 @@ public class RagApplication {
 
         // Prepare RAG context + AiServices (TokenStream handles tool calling automatically)
         String agentPrompt = resolveAgentPrompt(agentId);
-        RagService.AgenticStreamContext agenticCtx = ragService.prepareAgenticStream(question, history, agentPrompt);
+        java.util.Set<String> toolNames = resolveAgentToolNames(agentId);
+        RagService.AgenticStreamContext agenticCtx = ragService.prepareAgenticStream(question, history, agentPrompt, toolNames);
 
         // Send post-retrieval status
         writer.write("event: status\ndata: " + MAPPER.writeValueAsString(
@@ -1390,19 +1536,35 @@ public class RagApplication {
      * Resolve agent prompt: lookup agent by id, fallback to default agent's prompt, then hardcoded default.
      */
     private static String resolveAgentPrompt(String agentId) {
-        if (agentId != null && !agentId.isBlank()) {
-            AgentStore.Agent agent = agentStore.getById(agentId);
-            if (agent != null) {
-                String prompt = PromptRegistry.getTemplate(agent.promptKey());
-                if (prompt != null && !prompt.isBlank()) return prompt;
-            }
-        }
-        AgentStore.Agent def = agentStore.getById("default");
-        if (def != null) {
-            String prompt = PromptRegistry.getTemplate(def.promptKey());
+        AgentStore.Agent agent = resolveAgent(agentId);
+        if (agent != null) {
+            String prompt = PromptRegistry.getTemplate(agent.promptKey());
             if (prompt != null && !prompt.isBlank()) return prompt;
         }
-        return null; // RagPromptTemplate will use its own hardcoded default
+        return null;
+    }
+
+    /**
+     * 解析 Agent，返回 Agent 对象（含 toolNames）
+     */
+    private static AgentStore.Agent resolveAgent(String agentId) {
+        if (agentId != null && !agentId.isBlank()) {
+            AgentStore.Agent agent = agentStore.getById(agentId);
+            if (agent != null) return agent;
+        }
+        return agentStore.getById("default");
+    }
+
+    /**
+     * 获取 Agent 的工具过滤名称集合
+     * 返回 null 表示使用全部工具
+     */
+    private static java.util.Set<String> resolveAgentToolNames(String agentId) {
+        AgentStore.Agent agent = resolveAgent(agentId);
+        if (agent != null && agent.hasToolFilter()) {
+            return new java.util.HashSet<>(agent.toolNames());
+        }
+        return null;
     }
 
     private static List<RagService.HistoryEntry> parseBlogChatHistory(JsonNode historyNode) {
@@ -1430,32 +1592,13 @@ public class RagApplication {
 
         Task task = taskManager.create(taskId, skillId);
 
-        if (!"rag-query".equals(skillId)) {
-            task.fail("Unknown skill: " + skillId);
-            return taskResult(task);
-        }
-
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> input = (Map<String, Object>) params.get("input");
-            String question = input != null ? (String) input.get("question") : "";
-            if (question == null || question.isBlank()) {
-                task.fail("question is required in input");
-                return taskResult(task);
-            }
+            if (input == null) input = Map.of();
 
-            RagService.RagAnswer ragAnswer = ragService.ask(question);
-            List<Map<String, Object>> taskSources = new ArrayList<>();
-            for (RagService.SourceInfo s : ragAnswer.sources()) {
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("index", s.index());
-                m.put("text", s.text());
-                m.put("source", s.source());
-                m.put("rrfScore", s.rrfScore());
-                m.put("vectorScore", s.vectorScore());
-                taskSources.add(m);
-            }
-            task.completeWithDetails(ragAnswer.answer(), question, taskSources);
+            String result = skillRegistry.execute(skillId, input);
+            task.completeWithDetails(result, skillId, List.of());
         } catch (Exception e) {
             task.fail(e.getMessage());
         }
@@ -1615,6 +1758,29 @@ public class RagApplication {
             } catch (Exception e) {
                 failed.add(filename + ": " + e.getMessage());
             }
+
+            // Auto-merge new document into the main knowledge graph (create if needed)
+            try {
+                var mainGraph = graphStore.getOrCreateMainGraph();
+                if (mainGraph != null) {
+                    String fname = filename;
+                    String mainGraphId = mainGraph.id();
+                    CompletableFuture.runAsync(() -> {
+                        try {
+                            Path p = Path.of("knowledge").resolve(fname.replaceAll("[\\\\/]", "_"));
+                            if (!Files.exists(p)) return;
+                            String text = AutoDocumentParser.load(p).text();
+                            if (text == null || text.isBlank()) return;
+                            if (text.length() > 8000) text = text.substring(0, 8000) + "...";
+                            var req = new KnowledgeGraphExtractor.ExtractRequest(text, fname, 15, 25);
+                            var extraction = graphExtractor.extract(req);
+                            graphStore.mergeIntoGraph(mainGraphId, extraction, fname);
+                        } catch (Exception ex) {
+                            System.err.println("[WARN] Auto-merge graph failed for " + fname + ": " + ex.getMessage());
+                        }
+                    });
+                }
+            } catch (Exception ignored) {}
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -2067,5 +2233,349 @@ public class RagApplication {
     private static String escapeHtml(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
+    private static List<String> parseToolNamesFromJson(JsonNode node) {
+        if (node == null || !node.isArray()) return List.of();
+        List<String> names = new ArrayList<>();
+        for (JsonNode item : node) {
+            String name = item.asText("").trim();
+            if (!name.isEmpty()) names.add(name);
+        }
+        return names;
+    }
+
+    // ===== Knowledge Graph Routes =====
+
+    private static void registerGraphRoutes(Javalin app) {
+
+        // Generate graph from document — synchronous, returns directly
+        app.post("/api/graph/generate", ctx -> {
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String sourceFile = root.path("sourceFile").asText("");
+            int maxNodes = root.path("maxNodes").asInt(30);
+            int maxEdges = root.path("maxEdges").asInt(50);
+
+            if (sourceFile.isBlank()) {
+                ctx.status(400).json(Map.of("error", "sourceFile is required"));
+                return;
+            }
+
+            Path docPath = Path.of("knowledge").resolve(sourceFile.replaceAll("[\\\\/]", "_"));
+            if (!Files.exists(docPath)) {
+                ctx.status(404).json(Map.of("error", "Document not found: " + sourceFile));
+                return;
+            }
+
+            String text;
+            try {
+                Document doc = AutoDocumentParser.load(docPath);
+                text = doc.text();
+            } catch (Exception e) {
+                ctx.status(500).json(Map.of("error", "Failed to parse document: " + e.getMessage()));
+                return;
+            }
+
+            if (text == null || text.isBlank()) {
+                ctx.status(400).json(Map.of("error", "Document has no text content"));
+                return;
+            }
+
+            // Synchronous extraction
+            try {
+                String title = sourceFile.replaceAll("\\.[^.]+$", "");
+                var request = new KnowledgeGraphExtractor.ExtractRequest(text, sourceFile, maxNodes, maxEdges);
+                var extraction = graphExtractor.extract(request);
+                var result = graphStore.importFromExtraction(title, sourceFile, extraction);
+                ctx.json(Map.of("graphId", result.id(), "status", "ready", "nodeCount", result.nodeCount(), "edgeCount", result.edgeCount()));
+            } catch (Exception e) {
+                ctx.status(500).json(Map.of("error", "Extraction failed: " + e.getMessage()));
+            }
+        });
+
+        // Generate graph from ALL documents — SSE streaming progress
+        app.post("/api/graph/generate-all", ctx -> {
+            JsonNode root = MAPPER.readTree(ctx.body());
+            int maxNodesPerDoc = root.path("maxNodesPerDoc").asInt(20);
+            int maxEdgesPerDoc = root.path("maxEdgesPerDoc").asInt(30);
+
+            Path knowledgeDir = Path.of("knowledge");
+            if (!Files.isDirectory(knowledgeDir)) {
+                ctx.status(400).json(Map.of("error", "Knowledge base is empty"));
+                return;
+            }
+
+            List<Path> docs;
+            try (Stream<Path> paths = Files.list(knowledgeDir)) {
+                docs = paths.filter(Files::isRegularFile)
+                        .filter(p -> !p.getFileName().toString().startsWith("."))
+                        .toList();
+            }
+
+            if (docs.isEmpty()) {
+                ctx.status(400).json(Map.of("error", "No documents found"));
+                return;
+            }
+
+            var graph = graphStore.getOrCreateMainGraph();
+            String graphId = graph.id();
+            int totalDocs = docs.size();
+
+            // SSE response
+            ctx.res().setContentType("text/event-stream; charset=UTF-8");
+            ctx.res().setHeader("Cache-Control", "no-cache");
+            ctx.res().setHeader("Connection", "keep-alive");
+            ctx.res().setHeader("X-Accel-Buffering", "no");
+            var writer = ctx.res().getWriter();
+
+            int processed = 0;
+            int failed = 0;
+            for (Path docPath : docs) {
+                try {
+                    String text = AutoDocumentParser.load(docPath).text();
+                    if (text == null || text.isBlank()) { processed++; continue; }
+                    if (text.length() > 8000) text = text.substring(0, 8000) + "...";
+
+                    var request = new KnowledgeGraphExtractor.ExtractRequest(
+                            text, docPath.getFileName().toString(), maxNodesPerDoc, maxEdgesPerDoc);
+                    var extraction = graphExtractor.extract(request);
+                    graphStore.mergeIntoGraph(graphId, extraction, docPath.getFileName().toString());
+                    processed++;
+                } catch (Exception e) {
+                    failed++;
+                    processed++;
+                    System.err.println("[WARN] Failed to extract from " + docPath.getFileName() + ": " + e.getMessage());
+                }
+
+                // Send progress event
+                try {
+                    writer.write("event: progress\ndata: " + MAPPER.writeValueAsString(Map.of(
+                            "processed", processed, "total", totalDocs, "failed", failed,
+                            "currentFile", docPath.getFileName().toString()
+                    )) + "\n\n");
+                    writer.flush();
+                } catch (Exception ignored) {}
+            }
+
+            // Send done event
+            var finalGraph = graphStore.getGraph(graphId);
+            try {
+                writer.write("event: done\ndata: " + MAPPER.writeValueAsString(Map.of(
+                        "graphId", graphId, "status", finalGraph != null ? finalGraph.status() : "ready",
+                        "processed", processed, "failed", failed,
+                        "nodeCount", finalGraph != null ? finalGraph.nodeCount() : 0,
+                        "edgeCount", finalGraph != null ? finalGraph.edgeCount() : 0
+                )) + "\n\n");
+                writer.flush();
+            } catch (Exception ignored) {}
+        });
+
+        // Incrementally merge a document into an existing graph
+        app.post("/api/graph/graphs/{id}/merge", ctx -> {
+            String graphId = ctx.pathParam("id");
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String sourceFile = root.path("sourceFile").asText("");
+            int maxNodes = root.path("maxNodes").asInt(20);
+            int maxEdges = root.path("maxEdges").asInt(30);
+
+            var graph = graphStore.getGraph(graphId);
+            if (graph == null) {
+                ctx.status(404).json(Map.of("error", "Graph not found"));
+                return;
+            }
+            if (sourceFile.isBlank()) {
+                ctx.status(400).json(Map.of("error", "sourceFile is required"));
+                return;
+            }
+
+            Path docPath = Path.of("knowledge").resolve(sourceFile.replaceAll("[\\\\/]", "_"));
+            if (!Files.exists(docPath)) {
+                ctx.status(404).json(Map.of("error", "Document not found"));
+                return;
+            }
+
+            CompletableFuture.runAsync(() -> {
+                try {
+                    String text = AutoDocumentParser.load(docPath).text();
+                    if (text == null || text.isBlank()) return;
+                    if (text.length() > 8000) text = text.substring(0, 8000) + "...";
+                    var request = new KnowledgeGraphExtractor.ExtractRequest(text, sourceFile, maxNodes, maxEdges);
+                    var extraction = graphExtractor.extract(request);
+                    graphStore.mergeIntoGraph(graphId, extraction, sourceFile);
+                } catch (Exception e) {
+                    System.err.println("[WARN] Merge failed for " + sourceFile + ": " + e.getMessage());
+                }
+            });
+
+            ctx.json(Map.of("status", "merging", "message", "Merging " + sourceFile + " into graph"));
+        });
+
+        // List graphs
+        app.get("/api/graph/graphs", ctx -> ctx.json(graphStore.listGraphs()));
+
+        // Get graph detail (with nodes and edges)
+        app.get("/api/graph/graphs/{id}", ctx -> {
+            String id = ctx.pathParam("id");
+            var graph = graphStore.getGraph(id);
+            if (graph == null) {
+                ctx.status(404).json(Map.of("error", "Graph not found"));
+                return;
+            }
+            var nodes = graphStore.listNodesByGraph(id);
+            var edges = graphStore.listEdgesByGraph(id);
+            ctx.json(Map.of("graph", graph, "nodes", nodes, "edges", edges));
+        });
+
+        // Delete graph
+        app.delete("/api/graph/graphs/{id}", ctx -> {
+            graphStore.deleteGraph(ctx.pathParam("id"));
+            ctx.json(Map.of("ok", true));
+        });
+
+        // Graph Q&A
+        app.post("/api/graph/graphs/{id}/qa", ctx -> {
+            String id = ctx.pathParam("id");
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String question = root.path("question").asText("");
+            if (question.isBlank()) {
+                ctx.status(400).json(Map.of("error", "question is required"));
+                return;
+            }
+
+            var graph = graphStore.getGraph(id);
+            if (graph == null) {
+                ctx.status(404).json(Map.of("error", "Graph not found"));
+                return;
+            }
+
+            var nodes = graphStore.listNodesByGraph(id);
+            var edges = graphStore.listEdgesByGraph(id);
+
+            String graphContext = buildGraphContext(graph, nodes, edges);
+            String template = PromptRegistry.getTemplate("knowledge_graph_qa");
+            if (template == null || template.isBlank()) {
+                template = "基于以下图谱上下文回答问题：\n\n${graphContext}\n\n问题：";
+            }
+            String systemPrompt = template.replace("${graphContext}", graphContext);
+
+            var chatModel = ragService.getChatModel();
+            if (chatModel == null) {
+                ctx.status(500).json(Map.of("error", "LLM not available"));
+                return;
+            }
+            String answer = chatModel.chat(systemPrompt + "\n\n" + question);
+            answer = RagService.stripThinkTags(answer);
+            ctx.json(Map.of("answer", answer));
+        });
+
+        // Suggest relationships between two nodes
+        app.post("/api/graph/graphs/{id}/suggest", ctx -> {
+            String id = ctx.pathParam("id");
+            JsonNode root = MAPPER.readTree(ctx.body());
+            String sourceNodeId = root.path("sourceNodeId").asText("");
+            String targetNodeId = root.path("targetNodeId").asText("");
+            if (sourceNodeId.isBlank() || targetNodeId.isBlank()) {
+                ctx.status(400).json(Map.of("error", "sourceNodeId and targetNodeId are required"));
+                return;
+            }
+
+            var sourceNode = graphStore.getNode(sourceNodeId);
+            var targetNode = graphStore.getNode(targetNodeId);
+            if (sourceNode == null || targetNode == null) {
+                ctx.status(404).json(Map.of("error", "Node not found"));
+                return;
+            }
+
+            String nodeInfo = "节点A: " + sourceNode.label() + " (" + sourceNode.nodeType() + ") - " + sourceNode.description()
+                    + "\n节点B: " + targetNode.label() + " (" + targetNode.nodeType() + ") - " + targetNode.description();
+
+            // Get related document context
+            var graph = graphStore.getGraph(id);
+            String docContext = graph != null && graph.sourceFile() != null
+                    ? getDocumentSnippet(graph.sourceFile(), 1000) : "";
+
+            String template = PromptRegistry.getTemplate("knowledge_graph_suggest");
+            if (template == null || template.isBlank()) {
+                template = "基于以下节点信息和文档上下文，推理两个节点之间可能的关系：\n\n${nodeInfo}\n\n${docContext}";
+            }
+            String systemPrompt = template
+                    .replace("${nodeInfo}", nodeInfo)
+                    .replace("${docContext}", docContext);
+
+            var chatModel = ragService.getChatModel();
+            if (chatModel == null) {
+                ctx.status(500).json(Map.of("error", "LLM not available"));
+                return;
+            }
+            String raw = chatModel.chat(systemPrompt);
+            String cleaned = RagService.stripThinkTags(raw);
+
+            // Parse suggestions
+            try {
+                String json = cleaned.trim();
+                if (json.startsWith("```")) {
+                    int start = json.indexOf('[');
+                    int end = json.lastIndexOf(']');
+                    if (start >= 0 && end > start) json = json.substring(start, end + 1);
+                }
+                int arrStart = json.indexOf('[');
+                int arrEnd = json.lastIndexOf(']');
+                if (arrStart >= 0 && arrEnd > arrStart) {
+                    json = json.substring(arrStart, arrEnd + 1);
+                }
+                ctx.json(Map.of("suggestions", MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {})));
+            } catch (Exception e) {
+                ctx.json(Map.of("suggestions", List.of(), "raw", cleaned));
+            }
+        });
+
+        // Export graph as JSON
+        app.get("/api/graph/graphs/{id}/export", ctx -> {
+            String id = ctx.pathParam("id");
+            var graph = graphStore.getGraph(id);
+            if (graph == null) {
+                ctx.status(404).json(Map.of("error", "Graph not found"));
+                return;
+            }
+            var nodes = graphStore.listNodesByGraph(id);
+            var edges = graphStore.listEdgesByGraph(id);
+            ctx.json(Map.of("graph", graph, "nodes", nodes, "edges", edges));
+        });
+    }
+
+    private static String buildGraphContext(KnowledgeGraphStore.Graph graph,
+                                             List<KnowledgeGraphStore.Node> nodes,
+                                             List<KnowledgeGraphStore.Edge> edges) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("图谱: ").append(graph.title()).append("\n");
+        if (graph.description() != null) sb.append("概要: ").append(graph.description()).append("\n");
+        sb.append("\n节点:\n");
+        for (var node : nodes) {
+            sb.append("- ").append(node.label());
+            if (node.nodeType() != null) sb.append(" [").append(node.nodeType()).append("]");
+            if (node.description() != null) sb.append(": ").append(node.description());
+            sb.append("\n");
+        }
+        sb.append("\n关系:\n");
+        Map<String, String> nodeLabelMap = nodes.stream()
+                .collect(java.util.stream.Collectors.toMap(KnowledgeGraphStore.Node::id, KnowledgeGraphStore.Node::label, (a, b) -> a));
+        for (var edge : edges) {
+            String srcLabel = nodeLabelMap.getOrDefault(edge.sourceId(), edge.sourceId());
+            String tgtLabel = nodeLabelMap.getOrDefault(edge.targetId(), edge.targetId());
+            sb.append("- ").append(srcLabel).append(" --[").append(edge.label()).append("]--> ").append(tgtLabel).append("\n");
+        }
+        return sb.toString();
+    }
+
+    private static String getDocumentSnippet(String sourceFile, int maxChars) {
+        try {
+            Path docPath = Path.of("knowledge").resolve(sourceFile.replaceAll("[\\\\/]", "_"));
+            if (!Files.exists(docPath)) return "";
+            String text = AutoDocumentParser.load(docPath).text();
+            if (text != null && text.length() > maxChars) text = text.substring(0, maxChars) + "...";
+            return text != null ? text : "";
+        } catch (Exception e) {
+            return "";
+        }
     }
 }

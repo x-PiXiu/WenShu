@@ -8,6 +8,7 @@ import dev.langchain4j.agent.tool.ToolSpecifications;
 
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 手动工具执行引擎：从 @Tool 类提取规格 + 执行 ToolExecutionRequest
@@ -35,8 +36,32 @@ public class ToolEngine {
         return Collections.unmodifiableList(specifications);
     }
 
+    /**
+     * 按工具名称过滤，返回匹配的 ToolSpecification 列表
+     */
+    public List<ToolSpecification> getSpecifications(Set<String> names) {
+        if (names == null || names.isEmpty()) return getSpecifications();
+        return specifications.stream()
+                .filter(spec -> names.contains(spec.name()))
+                .toList();
+    }
+
     public boolean hasTools() {
         return !specifications.isEmpty();
+    }
+
+    /**
+     * 构建过滤后的 ToolSpecification → ToolExecutor 映射
+     * 用于 AiServices.tools(Map) 按名称注入指定工具
+     */
+    public Map<ToolSpecification, dev.langchain4j.service.tool.ToolExecutor> getFilteredToolMap(Set<String> names) {
+        List<ToolSpecification> filtered = getSpecifications(names);
+        Map<ToolSpecification, dev.langchain4j.service.tool.ToolExecutor> map = new LinkedHashMap<>();
+        dev.langchain4j.service.tool.ToolExecutor executor = (req, memoryId) -> execute(req);
+        for (ToolSpecification spec : filtered) {
+            map.put(spec, executor);
+        }
+        return map;
     }
 
     public String execute(ToolExecutionRequest request) {

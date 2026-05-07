@@ -33,10 +33,12 @@ import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -218,14 +220,21 @@ public class RagService {
      * 使用多消息格式，将历史消息 + RAG 检索上下文一起发送给 LLM
      */
     public RagAnswer askWithContext(String question, List<HistoryEntry> history) {
-        return askWithContext(question, history, null);
+        return askWithContext(question, history, null, null);
     }
 
     /**
      * 带对话历史 + 自定义智能体提示词的 RAG 问答
-     * 使用 AiServices 自动管理 Tool Calling 多轮循环
      */
     public RagAnswer askWithContext(String question, List<HistoryEntry> history, String agentPrompt) {
+        return askWithContext(question, history, agentPrompt, null);
+    }
+
+    /**
+     * 带对话历史 + 自定义智能体提示词 + 工具过滤的 RAG 问答
+     * 使用 AiServices 自动管理 Tool Calling 多轮循环
+     */
+    public RagAnswer askWithContext(String question, List<HistoryEntry> history, String agentPrompt, Set<String> toolNames) {
         List<SearchResult> results = searcher.search(question);
 
         List<Reference> refs = results.stream()
@@ -235,7 +244,7 @@ public class RagService {
         String systemContent = buildSystemContent(question, agentPrompt, refs, results);
 
         var memory = buildChatMemory(history, systemContent);
-        var assistant = buildAssistant(memory);
+        var assistant = buildAssistant(memory, toolNames);
 
         String answer = stripThinkTags(assistant.chat(question));
         if (answer == null) {
@@ -257,6 +266,13 @@ public class RagService {
      * AiServices 自动管理 Tool Calling 循环（包括流式模式）
      */
     public AgenticStreamContext prepareAgenticStream(String question, List<HistoryEntry> history, String agentPrompt) {
+        return prepareAgenticStream(question, history, agentPrompt, null);
+    }
+
+    /**
+     * 流式 Agentic 问答 + 工具过滤
+     */
+    public AgenticStreamContext prepareAgenticStream(String question, List<HistoryEntry> history, String agentPrompt, Set<String> toolNames) {
         List<SearchResult> results = searcher.search(question);
 
         List<Reference> refs = results.stream()
@@ -266,7 +282,7 @@ public class RagService {
         String systemContent = buildSystemContent(question, agentPrompt, refs, results);
 
         var memory = buildChatMemory(history, systemContent);
-        var assistant = buildAssistant(memory);
+        var assistant = buildAssistant(memory, toolNames);
         TokenStream tokenStream = assistant.chatStream(question);
 
         List<SourceInfo> sources = new ArrayList<>();
@@ -724,12 +740,29 @@ public class RagService {
      * System message 已在 buildChatMemory 中作为首条消息加入，避免某些模型不兼容 .systemMessage()
      */
     private RagAssistant buildAssistant(MessageWindowChatMemory memory) {
+        return buildAssistant(memory, null);
+    }
+
+    /**
+     * 构建 AiServices 助手实例，支持按 toolNames 过滤工具
+     * @param toolNames 允许使用的工具名称集合，null 或空表示使用全部工具
+     */
+    private RagAssistant buildAssistant(MessageWindowChatMemory memory, Set<String> toolNames) {
         var builder = AiServices.builder(RagAssistant.class)
                 .chatModel(chatModel)
                 .streamingChatModel(streamingChatModel)
                 .chatMemory(memory)
                 .maxSequentialToolsInvocations(10);
-        if (toolObjects.length > 0) {
+
+        if (toolNames != null && !toolNames.isEmpty() && toolEngine != null) {
+            // 按名称过滤工具
+            Map<dev.langchain4j.agent.tool.ToolSpecification, dev.langchain4j.service.tool.ToolExecutor> filtered =
+                    toolEngine.getFilteredToolMap(toolNames);
+            if (!filtered.isEmpty()) {
+                builder.tools(filtered);
+            }
+        } else if (toolObjects.length > 0) {
+            // 使用全部工具（默认行为）
             builder.tools(toolObjects);
         }
         return builder.build();
@@ -803,6 +836,58 @@ public class RagService {
             sb.append("- ").append(clean).append("\n");
         }
         return sb.toString();
+    }
+
+    // ===== Document File Operations (for Tool calls) =====
+
+    /**
+     * 读取知识库中指定文档的原始文本内容
+     */
+    public String readDocumentFile(String filename) {
+        Path file = Path.of("knowledge").resolve(filename).normalize();
+        if (!Files.exists(file)) return null;
+        try {
+            Document doc = AutoDocumentParser.load(file);
+            return doc.text();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 创建新文档并自动索引
+     */
+    public synchronized String createDocumentFile(String title, String content, String type) {
+        String safeName = title.replaceAll("[\\\\/:*?\"<>|]", "_") + ".md";
+        Path file = Path.of("knowledge").resolve(safeName);
+        try {
+            Files.writeString(file, content);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to write document: " + e.getMessage());
+        }
+        if ("AUTO".equalsIgnoreCase(type) || type == null || type.isBlank()) {
+            autoDetectAndIndex(file);
+        } else {
+            indexDocument(file, type);
+        }
+        return safeName;
+    }
+
+    /**
+     * 更新已有文档内容并重新索引
+     */
+    public synchronized void updateDocumentFile(String filename, String content) {
+        Path file = Path.of("knowledge").resolve(filename).normalize();
+        if (!Files.exists(file)) {
+            throw new RuntimeException("Document not found: " + filename);
+        }
+        try {
+            Files.writeString(file, content);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to update document: " + e.getMessage());
+        }
+        removeDocumentMeta(filename);
+        reindexAll("knowledge/");
     }
 
     // ===== Stats =====

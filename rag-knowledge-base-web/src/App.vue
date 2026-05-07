@@ -17,6 +17,9 @@
             <button :class="['nav-btn', { active: currentPage === 'flashcard' || currentPage === 'flashcard-detail' || currentPage === 'flashcard-study' }]" @click="switchPage('flashcard')" title="闪卡">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
             </button>
+            <button :class="['nav-btn', { active: currentPage === 'graph' || currentPage === 'graph-detail' }]" @click="switchPage('graph')" title="知识图谱">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </button>
             <button :class="['nav-btn', { active: currentPage === 'a2a' }]" @click="switchPage('a2a')" title="A2A 节点">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
             </button>
@@ -34,13 +37,54 @@
         <main class="main-area">
           <!-- Top bar -->
           <header class="topbar">
-            <h1 class="topbar-title">{{ pageTitle }}</h1>
+            <div v-if="currentPage === 'chat'" class="topbar-agent">
+              <span class="agent-avatar">{{ currentAgent?.avatar || '🤖' }}</span>
+              <select class="agent-select" :value="currentAgent?.id || ''" @change="onTopbarAgentChange">
+                <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.avatar }} {{ a.name }}</option>
+              </select>
+            </div>
+            <h1 v-else class="topbar-title">{{ pageTitle }}</h1>
             <div class="topbar-actions">
-              <button v-if="currentPage === 'chat'" class="new-chat-btn" @click="createConversation" title="新对话">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                新对话
-              </button>
-              <span v-if="stats && !currentPage.startsWith('admin')" class="topbar-info">
+              <template v-if="currentPage === 'chat'">
+                <button class="llm-switch-btn" @click="showLlmDropdown = !showLlmDropdown" :title="'当前: ' + (activeProvider?.name || stats?.llmModel || '')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5h1a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-5V5a3 3 0 0 0-3-3z"/></svg>
+                  <span class="llm-switch-label">{{ activeProvider?.modelName || stats?.llmModel || 'LLM' }}</span>
+                  <svg class="llm-switch-chevron" :class="{ open: showLlmDropdown }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <div v-if="showLlmDropdown" class="llm-dropdown" @click.stop>
+                  <div class="llm-dropdown-header">切换 LLM</div>
+                  <div v-for="p in llmProviders" :key="p.id"
+                       :class="['llm-dropdown-item', { active: p.isDefault }]"
+                       @click="onLlmSwitch(p.id)">
+                    <span :class="['llm-dd-dot', { on: p.isDefault }]"></span>
+                    <div class="llm-dd-info">
+                      <span class="llm-dd-name">{{ p.name }}</span>
+                      <span class="llm-dd-detail">{{ p.provider }} &middot; {{ p.modelName }}</span>
+                    </div>
+                    <span v-if="p.isDefault" class="llm-dd-check">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4CAF50" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    </span>
+                  </div>
+                </div>
+                <button class="topbar-icon-btn" @click="createConversation" title="新对话">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <div class="conv-dropdown-wrap">
+                  <button class="topbar-icon-btn" @click="showConvDropdown = !showConvDropdown" title="对话记录">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  </button>
+                  <div v-if="showConvDropdown" class="conv-dropdown" @click.stop>
+                    <ConversationList
+                      :conversations="conversations"
+                      :current-id="currentConversationId"
+                      @create="createConversation"
+                      @switch="onConvSwitch"
+                      @delete="deleteConversation"
+                    />
+                  </div>
+                </div>
+              </template>
+              <span v-if="stats && !currentPage.startsWith('admin') && currentPage !== 'chat'" class="topbar-info">
                 {{ stats.llmModel }} &middot; {{ stats.segmentCount }} segments
               </span>
             </div>
@@ -52,22 +96,6 @@
             <template v-if="currentPage === 'chat'">
               <div class="chat-area">
                 <ChatPanel />
-              </div>
-              <div :class="['side-panel', { collapsed: sidePanelCollapsed }]">
-                <button class="side-panel-toggle" @click="sidePanelCollapsed = !sidePanelCollapsed" :title="sidePanelCollapsed ? '展开面板' : '收起面板'">
-                  {{ sidePanelCollapsed ? '<' : '>' }}
-                </button>
-                <div class="side-panel-content" v-show="!sidePanelCollapsed">
-                  <ConversationList
-                    :conversations="conversations"
-                    :current-id="currentConversationId"
-                    @create="createConversation"
-                    @switch="switchConversation"
-                    @delete="deleteConversation"
-                  />
-                  <KnowledgeStats :stats="stats" />
-                  <AgentCard :agent-card="agentCard" />
-                </div>
               </div>
             </template>
 
@@ -92,6 +120,34 @@
             </template>
             <template v-if="currentPage === 'flashcard-study'">
               <StudyMode :deck-id="currentStudyDeckId" @back="currentPage = 'flashcard-detail'" />
+            </template>
+
+            <!-- Graph Pages -->
+            <template v-if="currentPage === 'graph'">
+              <div class="graph-page-wrapper">
+                <GraphPage @select="openGraph" />
+              </div>
+            </template>
+            <template v-if="currentPage === 'graph-detail'">
+              <div class="graph-detail-wrapper">
+                <div class="graph-detail-header">
+                  <button class="back-btn" @click="currentPage = 'graph'">&larr; 返回列表</button>
+                  <button class="qa-toggle-btn" @click="showGraphQA = !showGraphQA">{{ showGraphQA ? '关闭问答' : '图谱问答' }}</button>
+                </div>
+                <GraphCanvas
+                  :nodes="graphNodes"
+                  :edges="graphEdges"
+                  :graph-id="currentGraphId"
+                  @export="handleGraphExport"
+                  @ask="handleGraphAsk"
+                  @suggest="handleGraphSuggest"
+                />
+                <GraphQAPanel
+                  v-if="showGraphQA"
+                  :graph-id="currentGraphId"
+                  @close="showGraphQA = false"
+                />
+              </div>
             </template>
 
             <!-- A2A Page -->
@@ -132,6 +188,7 @@
               </div>
             </template>
 
+
             <!-- Admin Login -->
             <template v-if="currentPage === 'admin-login'">
               <div class="admin-login">
@@ -158,17 +215,13 @@
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
                     知识库
                   </button>
-                  <button :class="['admin-tab-btn', { active: adminTab === 'agents' }]" @click="adminTab = 'agents'">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                    智能体
+                  <button :class="['admin-tab-btn', { active: adminTab === 'integration' }]" @click="adminTab = 'integration'">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="8" height="8" rx="1"/><rect x="14" y="2" width="8" height="8" rx="1"/><rect x="2" y="14" width="8" height="8" rx="1"/><rect x="14" y="14" width="8" height="8" rx="1"/></svg>
+                    集成管理
                   </button>
                   <button :class="['admin-tab-btn', { active: adminTab === 'settings' }]" @click="adminTab = 'settings'">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                     系统设置
-                  </button>
-                  <button :class="['admin-tab-btn', { active: adminTab === 'categories' }]" @click="adminTab = 'categories'">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-                    分类管理
                   </button>
                   <button :class="['admin-tab-btn', { active: adminTab === 'media' }]" @click="adminTab = 'media'">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -199,7 +252,12 @@
 
                 <div class="admin-content">
                   <template v-if="adminTab === 'posts' && currentPage === 'admin'">
-                    <PostList @create="openEditor()" @edit="(a: Article) => openEditor(a)" />
+                    <div class="posts-sub-tabs">
+                      <button :class="['sub-tab-btn', { active: postsSubTab === 'posts' }]" @click="postsSubTab = 'posts'">文章列表</button>
+                      <button :class="['sub-tab-btn', { active: postsSubTab === 'categories' }]" @click="postsSubTab = 'categories'">分类管理</button>
+                    </div>
+                    <PostList v-if="postsSubTab === 'posts'" @create="openEditor()" @edit="(a: Article) => openEditor(a)" />
+                    <CategoryManager v-if="postsSubTab === 'categories'" />
                   </template>
                   <template v-if="adminTab === 'posts' && currentPage === 'admin-editor'">
                     <PostEditor :edit-article="editingArticle" @back="currentPage = 'admin'" @saved="onArticleSaved" />
@@ -207,14 +265,11 @@
                   <template v-if="adminTab === 'knowledge'">
                     <KnowledgeBase />
                   </template>
-                  <template v-if="adminTab === 'agents'">
-                    <AgentManager />
+                  <template v-if="adminTab === 'integration'">
+                    <IntegrationPage />
                   </template>
                   <template v-if="adminTab === 'settings'">
                     <SettingsPage />
-                  </template>
-                  <template v-if="adminTab === 'categories'">
-                    <CategoryManager />
                   </template>
                   <template v-if="adminTab === 'media'">
                     <MediaManager />
@@ -242,14 +297,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { NConfigProvider, NMessageProvider } from 'naive-ui'
 import type { GlobalThemeOverrides } from 'naive-ui'
 import ChatPanel from './components/ChatPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import KnowledgeBase from './components/KnowledgeBase.vue'
 import KnowledgeStats from './components/KnowledgeStats.vue'
-import AgentCard from './components/AgentCard.vue'
 import AgentManager from './components/AgentManager.vue'
 import TaskList from './components/TaskList.vue'
 import ConversationList from './components/ConversationList.vue'
@@ -266,13 +320,20 @@ import PromptManagePage from './components/PromptManagePage.vue'
 import FlashcardPage from './components/flashcard/FlashcardPage.vue'
 import DeckDetail from './components/flashcard/DeckDetail.vue'
 import StudyMode from './components/flashcard/StudyMode.vue'
+import GraphPage from './components/graph/GraphPage.vue'
+import GraphCanvas from './components/graph/GraphCanvas.vue'
+import GraphQAPanel from './components/graph/GraphQAPanel.vue'
+import IntegrationPage from './components/integration/IntegrationPage.vue'
 import { useA2aClient } from './composables/useA2aClient'
 import { useSettings } from './composables/useSettings'
 import { useChat } from './composables/useChat'
 import { useAgents } from './composables/useAgents'
 import { useBlog } from './composables/useBlog'
 import { useAdmin } from './composables/useAdmin'
+import { useGraph } from './composables/useGraph'
+import { useLlmProviders } from './composables/useLlmProviders'
 import type { KnowledgeStats as Stats } from './types/chat'
+import type { GraphNode, GraphEdge } from './types/graph'
 import type { Article } from './types/blog'
 
 const warmTheme: GlobalThemeOverrides = {
@@ -291,13 +352,16 @@ const warmTheme: GlobalThemeOverrides = {
 
 const currentPage = ref('chat')
 const adminTab = ref('posts')
-const sidePanelCollapsed = ref(false)
+const postsSubTab = ref('posts')
+const showConvDropdown = ref(false)
+const showLlmDropdown = ref(false)
 const healthStatus = ref('')
 
 const { agentCard, tasks, fetchAgentCard, fetchTasks } = useA2aClient()
 const { fetchStats } = useSettings()
 const { conversations, currentConversationId, loadConversations, createConversation, switchConversation, deleteConversation } = useChat()
-const { loadAgents } = useAgents()
+const { agents, currentAgent, selectAgent, loadAgents } = useAgents()
+const { providers: llmProviders, activeProvider, loadProviders, activateProvider } = useLlmProviders()
 const { getPost } = useBlog()
 const { isLoggedIn, login, loginNoPassword, checkAuthStatus, passwordEnabled, logout } = useAdmin()
 const stats = ref<Stats | null>(null)
@@ -308,6 +372,13 @@ const currentDeckId = ref('')
 const currentStudyDeckId = ref('')
 const adminPassword = ref('')
 const adminLoginError = ref(false)
+
+// Graph state
+const currentGraphId = ref('')
+const graphNodes = ref<GraphNode[]>([])
+const graphEdges = ref<GraphEdge[]>([])
+const showGraphQA = ref(false)
+const { getDetail, exportGraph } = useGraph()
 
 const isAdminPage = computed(() => ['admin', 'admin-editor', 'admin-posts'].includes(currentPage.value))
 
@@ -321,14 +392,15 @@ const pageTitle = computed(() => {
     case 'flashcard': return '文枢 · 闪卡'
     case 'flashcard-detail': return '闪卡详情'
     case 'flashcard-study': return '翻看卡片'
+    case 'graph': return '文枢 · 知识图谱'
+    case 'graph-detail': return '图谱详情'
     case 'admin':
     case 'admin-posts':
       switch (adminTab.value) {
-        case 'posts': return '文章管理'
+        case 'posts': return postsSubTab.value === 'categories' ? '分类管理' : '文章管理'
         case 'knowledge': return '知识库管理'
-        case 'agents': return '智能体管理'
+        case 'integration': return '集成管理'
         case 'settings': return '系统设置'
-        case 'categories': return '分类管理'
         case 'media': return '媒体库'
         default: return '管理后台'
       }
@@ -336,6 +408,23 @@ const pageTitle = computed(() => {
     default: return ''
   }
 })
+
+async function onConvSwitch(id: string) {
+  showConvDropdown.value = false
+  await switchConversation(id)
+}
+
+function onTopbarAgentChange(e: Event) {
+  const id = (e.target as HTMLSelectElement).value
+  const agent = agents.value.find(a => a.id === id)
+  if (agent) selectAgent(agent)
+}
+
+async function onLlmSwitch(id: string) {
+  showLlmDropdown.value = false
+  await activateProvider(id)
+  await fetchStats()
+}
 
 function switchPage(page: string) {
   if (page === 'a2a') {
@@ -406,6 +495,29 @@ function onArticleSaved(article: Article) {
   adminTab.value = 'posts'
 }
 
+async function openGraph(id: string) {
+  currentGraphId.value = id
+  showGraphQA.value = false
+  const detail = await getDetail(id)
+  if (detail) {
+    graphNodes.value = detail.nodes
+    graphEdges.value = detail.edges
+  }
+  currentPage.value = 'graph-detail'
+}
+
+function handleGraphExport() {
+  exportGraph(currentGraphId.value)
+}
+
+function handleGraphAsk(question: string) {
+  // Handled by GraphQAPanel
+}
+
+function handleGraphSuggest(sourceId: string, targetId: string) {
+  // Handled by NodeDetailPanel
+}
+
 async function checkHealth() {
   try {
     const res = await fetch('/api/health')
@@ -427,7 +539,18 @@ onMounted(async () => {
   fetchTasks()
   loadConversations()
   loadAgents()
+  loadProviders()
+  document.addEventListener('click', closeDropdowns)
 })
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeDropdowns)
+})
+
+function closeDropdowns(e: MouseEvent) {
+  if (!(e.target as HTMLElement).closest('.conv-dropdown-wrap')) showConvDropdown.value = false
+  if (!(e.target as HTMLElement).closest('.llm-switch-btn') && !(e.target as HTMLElement).closest('.llm-dropdown')) showLlmDropdown.value = false
+}
 </script>
 
 <style>
@@ -497,6 +620,18 @@ body {
   flex-shrink: 0;
 }
 .topbar-title { font-size: 17px; font-weight: 600; color: #3D3028; margin: 0; }
+.topbar-agent { display: flex; align-items: center; gap: 10px; }
+.agent-avatar {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: #FEF3E8; display: flex; align-items: center;
+  justify-content: center; font-size: 18px; flex-shrink: 0;
+}
+.topbar-agent .agent-select {
+  padding: 5px 12px; border: 1px solid #E8DDD0; border-radius: 8px;
+  font-size: 13px; font-weight: 500; color: #3D3028; background: #FAF7F2;
+  cursor: pointer; outline: none; transition: all 0.2s;
+}
+.topbar-agent .agent-select:focus { border-color: #D97B2B; background: #FEF3E8; }
 .topbar-actions { display: flex; align-items: center; gap: 12px; }
 .topbar-info { font-size: 13px; color: #A89888; }
 .new-chat-btn {
@@ -507,6 +642,65 @@ body {
   cursor: pointer; transition: all 0.2s;
 }
 .new-chat-btn:hover { background: #FEF3E8; border-color: #D97B2B; }
+
+/* Topbar icon buttons */
+.topbar-icon-btn {
+  width: 36px; height: 36px; border-radius: 8px;
+  border: 1px solid #E8DDD0; background: #FFFFFF;
+  color: #8B7E74; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.2s;
+}
+.topbar-icon-btn:hover { background: #FEF3E8; color: #D97B2B; border-color: #D97B2B; }
+
+/* Conversation dropdown */
+.conv-dropdown-wrap { position: relative; }
+.conv-dropdown {
+  position: absolute; right: 0; top: 100%; margin-top: 8px;
+  width: 320px; max-height: 480px; overflow-y: auto;
+  background: #FFFFFF; border: 1px solid #E8DDD0; border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.1); z-index: 100;
+}
+
+/* LLM quick-switch */
+.llm-switch-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px; border-radius: 8px;
+  border: 1px solid #E8DDD0; background: #FAFAF6;
+  color: #6B5E52; cursor: pointer; transition: all 0.2s;
+  position: relative;
+}
+.llm-switch-btn:hover { background: #FEF3E8; border-color: #D97B2B; color: #D97B2B; }
+.llm-switch-label { font-size: 12px; font-weight: 600; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.llm-switch-chevron { transition: transform 0.2s; flex-shrink: 0; }
+.llm-switch-chevron.open { transform: rotate(180deg); }
+
+.llm-dropdown {
+  position: absolute; right: 0; top: 100%; margin-top: 8px;
+  width: 260px; background: #FFFFFF; border: 1px solid #E8DDD0;
+  border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+  z-index: 100; overflow: hidden;
+}
+.llm-dropdown-header {
+  padding: 10px 14px; font-size: 11px; font-weight: 600;
+  color: #B8A898; text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid #F0E8DD;
+}
+.llm-dropdown-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; cursor: pointer; transition: background 0.15s;
+}
+.llm-dropdown-item:hover { background: #FEFCFA; }
+.llm-dropdown-item.active { background: #F8F5EF; }
+.llm-dd-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid #D4C8BA; flex-shrink: 0;
+}
+.llm-dd-dot.on { border-color: #4CAF50; background: #4CAF50; }
+.llm-dd-info { flex: 1; min-width: 0; }
+.llm-dd-name { display: block; font-size: 13px; font-weight: 600; color: #3D3028; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.llm-dd-detail { display: block; font-size: 11px; color: #A89888; margin-top: 1px; }
+.llm-dd-check { flex-shrink: 0; display: flex; align-items: center; }
 
 /* Content */
 .content-wrapper { flex: 1; display: flex; overflow: hidden; min-height: 0; }
@@ -540,26 +734,6 @@ body {
 .hero-cap.off { background: #F5F0EB; color: #B8A898; border: 1px solid #E8DDD0; }
 .a2a-hero-offline .hero-body { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px 28px; }
 
-/* Side Panel */
-.side-panel {
-  width: 320px;
-  border-left: 1px solid #E8DDD0;
-  background: #FFFFFF;
-  display: flex; position: relative;
-  flex-shrink: 0;
-  transition: width 0.25s ease;
-}
-.side-panel.collapsed { width: 0; border-left: none; }
-.side-panel-toggle {
-  position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
-  width: 24px; height: 48px;
-  border: 1px solid #E8DDD0; border-radius: 8px 0 0 8px;
-  background: #FFFFFF; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  color: #A89888; font-size: 12px; z-index: 10;
-}
-.side-panel-toggle:hover { background: #FAF7F2; color: #E8913A; }
-.side-panel-content { width: 320px; overflow-y: auto; padding: 16px 12px; }
 .sidebar-divider { width: 28px; height: 1px; background: #5A4E44; margin: 8px 0; }
 
 /* Admin Login */
@@ -599,4 +773,36 @@ body {
 }
 .admin-logout-btn:hover { border-color: #E85D5D; color: #E85D5D; }
 .admin-content { flex: 1; overflow-y: auto; overflow-x: hidden; }
+
+/* Posts sub-tabs */
+.posts-sub-tabs {
+  display: flex; gap: 2px;
+  padding: 12px 24px 0; border-bottom: 1px solid #E8DDD0; background: #FFF;
+}
+.sub-tab-btn {
+  padding: 8px 16px; border: none; background: none; color: #8B7E74;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  border-bottom: 2px solid transparent; transition: all 0.2s;
+}
+.sub-tab-btn:hover { color: #D97B2B; }
+.sub-tab-btn.active { color: #D97B2B; border-bottom-color: #D97B2B; }
+
+/* Graph Pages */
+.graph-page-wrapper { flex: 1; overflow-y: auto; padding: 0 24px; }
+.graph-detail-wrapper { flex: 1; position: relative; display: flex; flex-direction: column; }
+.graph-detail-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px; border-bottom: 1px solid #E8DDD0; background: #FFF; flex-shrink: 0;
+}
+.back-btn {
+  padding: 6px 14px; border-radius: 6px; border: 1px solid #E8DDD0;
+  background: #FFF; font-size: 13px; cursor: pointer; color: #6B5E52;
+}
+.back-btn:hover { border-color: #D97B2B; color: #D97B2B; }
+.qa-toggle-btn {
+  padding: 6px 14px; border-radius: 6px; border: 1px solid #D97B2B;
+  background: #FFF; font-size: 13px; cursor: pointer; color: #D97B2B;
+  font-weight: 500; transition: all 0.2s;
+}
+.qa-toggle-btn:hover { background: #FEF3E8; }
 </style>

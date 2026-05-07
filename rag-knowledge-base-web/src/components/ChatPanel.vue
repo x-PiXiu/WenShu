@@ -1,29 +1,5 @@
 <template>
   <div class="chat-panel">
-    <!-- Agent selector bar -->
-    <div class="agent-bar" v-if="agents.length > 0">
-      <div class="agent-bar-left">
-        <span class="agent-bar-avatar">{{ currentAgent?.avatar || '🤖' }}</span>
-        <span class="agent-bar-name">{{ currentAgent?.name || '选择智能体' }}</span>
-      </div>
-      <div class="agent-bar-right">
-        <select class="agent-select" :value="currentAgent?.id || ''" @change="onAgentChange">
-          <option v-for="a in agents" :key="a.id" :value="a.id">
-            {{ a.avatar }} {{ a.name }}
-          </option>
-        </select>
-        <button class="agent-action-btn" title="创建智能体" @click="startCreateAgent">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
-        <button class="agent-action-btn" title="编辑当前智能体" @click="startEditAgent" :disabled="!currentAgent">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        </button>
-        <button class="agent-action-btn del" title="删除当前智能体" @click="handleDeleteAgent" :disabled="!currentAgent || currentAgent.isDefault">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        </button>
-      </div>
-    </div>
-
     <!-- Agent create/edit modal -->
     <div v-if="showAgentForm" class="modal-overlay" @click.self="showAgentForm = false">
       <div class="modal">
@@ -42,7 +18,20 @@
         </div>
         <div class="form-group">
           <label>系统提示词</label>
-          <textarea v-model="agentForm.systemPrompt" rows="8" placeholder="定义智能体的角色、行为和回答风格..." />
+          <textarea v-model="agentForm.systemPrompt" rows="6" placeholder="定义智能体的角色、行为和回答风格..." />
+        </div>
+        <div class="form-group">
+          <div class="tool-header">
+            <label>可用工具</label>
+            <span class="tool-hint">不勾选 = 使用全部工具</span>
+          </div>
+          <div v-if="chatTools.length === 0" class="tool-empty">加载中...</div>
+          <div v-else class="tool-checkboxes">
+            <label v-for="tool in chatTools" :key="tool.name" class="tool-check">
+              <input type="checkbox" :value="tool.name" v-model="agentForm.toolNames" />
+              <span class="tool-check-name">{{ tool.name }}</span>
+            </label>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="cancel-btn" @click="showAgentForm = false">取消</button>
@@ -182,24 +171,22 @@ const messagesRef = ref<HTMLElement>()
 const textareaRef = ref<HTMLTextAreaElement>()
 
 const { messages, loading, sendQuestion, stopGeneration } = useChat()
-const { agents, currentAgent, loadAgents, selectAgent, createAgent, updateAgent, deleteAgent } = useAgents()
+const { agents, currentAgent, availableTools: chatTools, loadAgents, loadAvailableTools, selectAgent, createAgent, updateAgent, deleteAgent } = useAgents()
 
 // Agent form state
 const showAgentForm = ref(false)
 const agentEditingId = ref<string | null>(null)
-const agentForm = ref({ name: '', description: '', systemPrompt: '', avatar: '🤖' })
+const agentForm = ref({ name: '', description: '', systemPrompt: '', avatar: '🤖', toolNames: [] as string[] })
 
-onMounted(() => loadAgents())
+onMounted(() => {
+  loadAgents()
+  loadAvailableTools()
+})
 
-function onAgentChange(e: Event) {
-  const id = (e.target as HTMLSelectElement).value
-  const agent = agents.value.find(a => a.id === id)
-  if (agent) selectAgent(agent)
-}
 
 function startCreateAgent() {
   agentEditingId.value = null
-  agentForm.value = { name: '', description: '', systemPrompt: '', avatar: '🤖' }
+  agentForm.value = { name: '', description: '', systemPrompt: '', avatar: '🤖', toolNames: [] }
   showAgentForm.value = true
 }
 
@@ -211,16 +198,21 @@ function startEditAgent() {
     description: currentAgent.value.description,
     systemPrompt: currentAgent.value.systemPrompt,
     avatar: currentAgent.value.avatar,
+    toolNames: currentAgent.value.toolNames ? [...currentAgent.value.toolNames] : [],
   }
   showAgentForm.value = true
 }
 
 async function handleSaveAgent() {
   if (!agentForm.value.name.trim() || !agentForm.value.systemPrompt.trim()) return
+  const payload = {
+    ...agentForm.value,
+    toolNames: agentForm.value.toolNames.length > 0 ? agentForm.value.toolNames : null,
+  }
   if (agentEditingId.value) {
-    await updateAgent(agentEditingId.value, agentForm.value)
+    await updateAgent(agentEditingId.value, payload)
   } else {
-    await createAgent(agentForm.value)
+    await createAgent(payload)
   }
   showAgentForm.value = false
 }
@@ -270,31 +262,6 @@ watch(messages, () => {
 </script>
 
 <style scoped>
-.agent-bar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 20px; background: #FFFFFF;
-  border-bottom: 1px solid #E8DDD0; flex-shrink: 0;
-}
-.agent-bar-left { display: flex; align-items: center; gap: 8px; }
-.agent-bar-right { display: flex; align-items: center; gap: 6px; }
-.agent-bar-avatar { font-size: 18px; }
-.agent-bar-name { font-size: 13px; font-weight: 600; color: #3D3028; }
-.agent-select {
-  padding: 4px 10px; border: 1px solid #E8DDD0; border-radius: 6px;
-  font-size: 12px; color: #6B5E52; background: #FAF7F2;
-  cursor: pointer; outline: none;
-}
-.agent-select:focus { border-color: #D97B2B; }
-.agent-action-btn {
-  width: 28px; height: 28px; border-radius: 6px;
-  border: 1px solid #E8DDD0; background: #FFFFFF;
-  color: #8B7E74; cursor: pointer; display: flex;
-  align-items: center; justify-content: center;
-  transition: all 0.15s; flex-shrink: 0;
-}
-.agent-action-btn:hover:not(:disabled) { border-color: #D97B2B; color: #D97B2B; }
-.agent-action-btn.del:hover:not(:disabled) { border-color: #E85D5D; color: #E85D5D; }
-.agent-action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* Modal */
 .modal-overlay {
@@ -319,6 +286,26 @@ watch(messages, () => {
 .form-group input:focus, .form-group textarea:focus { outline: none; border-color: #D97B2B; }
 .form-group textarea { resize: vertical; line-height: 1.5; }
 .avatar-input { width: 80px !important; text-align: center; font-size: 20px; }
+.tool-header { display: flex; align-items: baseline; gap: 8px; }
+.tool-header label { margin-bottom: 0; }
+.tool-hint { font-size: 11px; color: #B8A898; }
+.tool-empty { font-size: 12px; color: #B8A898; padding: 8px 0; }
+.tool-checkboxes {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-height: 150px; overflow-y: auto; padding: 8px;
+  background: #FAF7F2; border: 1px solid #E8DDD0; border-radius: 8px;
+}
+.tool-check {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 6px; border: 1px solid #E8DDD0;
+  background: #FFFFFF; cursor: pointer; font-size: 12px;
+  transition: all 0.15s; white-space: nowrap;
+}
+.tool-check:has(input:checked) {
+  border-color: #D97B2B; background: #FEF3E8;
+}
+.tool-check input { display: none; }
+.tool-check-name { font-weight: 500; color: #3D3028; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .cancel-btn {
   padding: 8px 20px; border-radius: 8px; border: 1px solid #E8DDD0;

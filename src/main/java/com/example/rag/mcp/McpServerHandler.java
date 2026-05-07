@@ -106,7 +106,7 @@ public class McpServerHandler {
     private Map<String, Object> handleToolsList() {
         List<Map<String, Object>> tools = new ArrayList<>();
 
-        // RAG query tool (always available)
+        // MCP 专属复合工具：检索+生成一体化
         tools.add(Map.of(
                 "name", "rag_query",
                 "description", "基于知识库的智能问答：检索相关文档并生成精准答案",
@@ -119,42 +119,30 @@ public class McpServerHandler {
                 )
         ));
 
-        // Document search tool
-        tools.add(Map.of(
-                "name", "search_documents",
-                "description", "在知识库中搜索相关文档片段",
-                "inputSchema", Map.of(
-                        "type", "object",
-                        "properties", Map.of(
-                                "query", Map.of("type", "string", "description", "搜索关键词")
-                        ),
-                        "required", List.of("query")
-                )
-        ));
-
-        // Knowledge stats tool
-        tools.add(Map.of(
-                "name", "get_knowledge_stats",
-                "description", "获取知识库的统计信息",
-                "inputSchema", Map.of("type", "object", "properties", Map.of())
-        ));
-
-        // Expose @Tool tools from ToolEngine
+        // 自动暴露 ToolEngine 中所有 @Tool 方法
         if (toolEngine != null) {
             for (ToolSpecification spec : toolEngine.getSpecifications()) {
-                if ("webSearch".equals(spec.name())) {
-                    tools.add(Map.of(
-                            "name", "web_search",
-                            "description", spec.description(),
-                            "inputSchema", Map.of(
-                                    "type", "object",
-                                    "properties", Map.of(
-                                            "query", Map.of("type", "string", "description", "搜索关键词")
-                                    ),
-                                    "required", List.of("query")
-                            )
-                    ));
+                String mcpName = camelToSnake(spec.name());
+                Map<String, Object> properties = new LinkedHashMap<>();
+                List<String> required = new ArrayList<>();
+                if (spec.parameters() != null && spec.parameters().properties() != null) {
+                    for (var entry : spec.parameters().properties().entrySet()) {
+                        properties.put(entry.getKey(), Map.of(
+                                "type", "string",
+                                "description", ""
+                        ));
+                        required.add(entry.getKey());
+                    }
                 }
+                tools.add(Map.of(
+                        "name", mcpName,
+                        "description", spec.description() != null ? spec.description() : "",
+                        "inputSchema", Map.of(
+                                "type", "object",
+                                "properties", properties,
+                                "required", required
+                        )
+                ));
             }
         }
 
@@ -169,51 +157,49 @@ public class McpServerHandler {
 
         String result;
         try {
-            result = switch (toolName) {
-                case "rag_query" -> {
-                    String question = (String) arguments.get("question");
-                    RagService.RagAnswer answer = ragService.ask(question);
-                    StringBuilder sb = new StringBuilder(answer.answer());
-                    if (!answer.sources().isEmpty()) {
-                        sb.append("\n\n来源:\n");
-                        for (var src : answer.sources()) {
-                            sb.append("- ").append(src.source() != null ? src.source() : "文档").append("\n");
-                        }
-                    }
-                    yield sb.toString();
-                }
-                case "search_documents" -> {
-                    String query = (String) arguments.get("query");
-                    var answer = ragService.ask(query);
-                    StringBuilder sb = new StringBuilder();
+            // MCP 专属复合工具
+            if ("rag_query".equals(toolName)) {
+                String question = (String) arguments.get("question");
+                RagService.RagAnswer answer = ragService.ask(question);
+                StringBuilder sb = new StringBuilder(answer.answer());
+                if (!answer.sources().isEmpty()) {
+                    sb.append("\n\n来源:\n");
                     for (var src : answer.sources()) {
-                        sb.append("[").append(src.index()).append("] ");
-                        sb.append(src.text()).append(" (").append(src.source()).append(")\n");
+                        sb.append("- ").append(src.source() != null ? src.source() : "文档").append("\n");
                     }
-                    yield sb.isEmpty() ? "未找到相关文档" : sb.toString();
                 }
-                case "get_knowledge_stats" -> {
-                    var stats = ragService.getStats();
-                    yield "文档: " + stats.documentCount() + ", 分段: " + stats.segmentCount()
-                            + ", 模型: " + stats.llmModel() + ", 向量库: " + stats.vectorStoreType();
-                }
-                case "web_search" -> {
-                    if (toolEngine != null) {
-                        yield toolEngine.execute(dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
-                                .name("webSearch")
-                                .arguments(MAPPER.writeValueAsString(arguments))
-                                .build());
-                    }
-                    yield "Web search not available";
-                }
-                default -> "Unknown tool: " + toolName;
-            };
+                result = sb.toString();
+            } else if (toolEngine != null) {
+                // 统一委托给 ToolEngine 执行（自动转换 snake_case → camelCase）
+                String camelName = snakeToCamel(toolName);
+                result = toolEngine.execute(dev.langchain4j.agent.tool.ToolExecutionRequest.builder()
+                        .name(camelName)
+                        .arguments(MAPPER.writeValueAsString(arguments))
+                        .build());
+            } else {
+                result = "Tool engine not available";
+            }
         } catch (Exception e) {
             return Map.of("isError", true, "content", List.of(
                     Map.of("type", "text", "text", "Error: " + e.getMessage())));
         }
 
         return Map.of("content", List.of(Map.of("type", "text", "text", result)));
+    }
+
+    private static String camelToSnake(String camel) {
+        return camel.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase();
+    }
+
+    private static String snakeToCamel(String snake) {
+        StringBuilder sb = new StringBuilder();
+        boolean upper = false;
+        for (char c : snake.toCharArray()) {
+            if (c == '_') { upper = true; continue; }
+            sb.append(upper ? Character.toUpperCase(c) : c);
+            upper = false;
+        }
+        return sb.toString();
     }
 
     private void sendToSession(String sessionId, Map<String, Object> response) {

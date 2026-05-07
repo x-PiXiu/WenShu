@@ -4,6 +4,9 @@ import com.example.rag.config.AppConfiguration;
 import com.example.rag.config.DatabasePool;
 import com.example.rag.prompt.PromptRegistry;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +17,9 @@ import java.util.UUID;
  * system_prompt 已迁移至 PromptRegistry 统一管理，此处只存 prompt_key 引用
  */
 public class AgentStore {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final TypeReference<List<String>> LIST_TYPE = new TypeReference<>() {};
 
     private final AppConfiguration config;
 
@@ -38,12 +44,24 @@ public class AgentStore {
                     prompt_key TEXT NOT NULL,
                     avatar TEXT NOT NULL DEFAULT '',
                     is_default INTEGER NOT NULL DEFAULT 0,
+                    tool_names TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 )
             """);
+            migrateAddToolNames(conn);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to init agent table: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 为旧 schema 添加 tool_names 列
+     */
+    private void migrateAddToolNames(Connection conn) throws SQLException {
+        if (!hasColumn(conn, "agent", "tool_names")) {
+            conn.createStatement().execute("ALTER TABLE agent ADD COLUMN tool_names TEXT");
+            System.out.println("[MIGRATE] Added tool_names column to agent table");
         }
     }
 
@@ -99,13 +117,14 @@ public class AgentStore {
                 prompt_key TEXT NOT NULL,
                 avatar TEXT NOT NULL DEFAULT '',
                 is_default INTEGER NOT NULL DEFAULT 0,
+                tool_names TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
         """);
 
         try (var ps = conn.prepareStatement(
-                "INSERT INTO agent (id, name, description, prompt_key, avatar, is_default, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)")) {
+                "INSERT INTO agent (id, name, description, prompt_key, avatar, is_default, tool_names, created_at, updated_at) VALUES (?,?,?,?,?,?,NULL,?,?)")) {
             for (int i = 0; i < oldRows.size(); i++) {
                 Object[] row = oldRows.get(i);
                 ps.setString(1, (String) row[0]);
@@ -151,8 +170,8 @@ public class AgentStore {
         long now = System.currentTimeMillis();
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
-                     "INSERT INTO agent (id, name, description, prompt_key, avatar, is_default, created_at, updated_at) " +
-                             "VALUES ('default', '文枢知识助手', '默认的知识库问答助手', 'rag_qa', '📚', 1, ?, ?)")) {
+                     "INSERT INTO agent (id, name, description, prompt_key, avatar, is_default, tool_names, created_at, updated_at) " +
+                             "VALUES ('default', '文枢知识助手', '默认的知识库问答助手', 'rag_qa', '📚', 1, NULL, ?, ?)")) {
             ps.setLong(1, now);
             ps.setLong(2, now);
             ps.executeUpdate();
@@ -165,24 +184,28 @@ public class AgentStore {
     // ===== CRUD =====
 
     public Agent create(String name, String description, String systemPrompt, String avatar) {
+        return create(name, description, systemPrompt, avatar, null);
+    }
+
+    public Agent create(String name, String description, String systemPrompt, String avatar, List<String> toolNames) {
         String id = "agent-" + UUID.randomUUID().toString().substring(0, 8);
         String promptKey = "agent_" + id;
         long now = System.currentTimeMillis();
 
-        // 先写入 PromptRegistry
         PromptRegistry.putTemplate(promptKey, systemPrompt, "Agent: " + name, "agent");
         PromptRegistry.persist(config);
 
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
-                     "INSERT INTO agent (id, name, description, prompt_key, avatar, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")) {
+                     "INSERT INTO agent (id, name, description, prompt_key, avatar, is_default, tool_names, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)")) {
             ps.setString(1, id);
             ps.setString(2, name);
             ps.setString(3, description != null ? description : "");
             ps.setString(4, promptKey);
             ps.setString(5, avatar != null ? avatar : "");
-            ps.setLong(6, now);
+            ps.setString(6, serializeToolNames(toolNames));
             ps.setLong(7, now);
+            ps.setLong(8, now);
             ps.executeUpdate();
         } catch (SQLException e) {
             PromptRegistry.removeTemplate(promptKey);
@@ -190,33 +213,37 @@ public class AgentStore {
             throw new RuntimeException("Failed to create agent: " + e.getMessage(), e);
         }
         return new Agent(id, name, description != null ? description : "",
-                promptKey, avatar != null ? avatar : "", false, now, now);
+                promptKey, avatar != null ? avatar : "", false, toolNames, now, now);
     }
 
     public Agent update(String id, String name, String description, String systemPrompt, String avatar) {
+        return update(id, name, description, systemPrompt, avatar, null);
+    }
+
+    public Agent update(String id, String name, String description, String systemPrompt, String avatar, List<String> toolNames) {
         Agent existing = getById(id);
         if (existing == null) throw new RuntimeException("Agent not found: " + id);
 
         long now = System.currentTimeMillis();
 
-        // 更新 PromptRegistry 中的提示词
         PromptRegistry.putTemplate(existing.promptKey(), systemPrompt, "Agent: " + name, "agent");
         PromptRegistry.persist(config);
 
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE agent SET name = ?, description = ?, avatar = ?, updated_at = ? WHERE id = ?")) {
+                     "UPDATE agent SET name = ?, description = ?, avatar = ?, tool_names = ?, updated_at = ? WHERE id = ?")) {
             ps.setString(1, name);
             ps.setString(2, description);
             ps.setString(3, avatar);
-            ps.setLong(4, now);
-            ps.setString(5, id);
+            ps.setString(4, serializeToolNames(toolNames));
+            ps.setLong(5, now);
+            ps.setString(6, id);
             if (ps.executeUpdate() == 0) throw new RuntimeException("Agent not found: " + id);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to update agent: " + e.getMessage(), e);
         }
         return new Agent(id, name, description, existing.promptKey(), avatar, existing.isDefault(),
-                existing.createdAt(), now);
+                toolNames, existing.createdAt(), now);
     }
 
     public void delete(String id) {
@@ -242,7 +269,7 @@ public class AgentStore {
     public Agent getById(String id) {
         try (Connection conn = getConnection();
              PreparedStatement ps = conn.prepareStatement(
-                     "SELECT id, name, description, prompt_key, avatar, is_default, created_at, updated_at FROM agent WHERE id = ?")) {
+                     "SELECT id, name, description, prompt_key, avatar, is_default, tool_names, created_at, updated_at FROM agent WHERE id = ?")) {
             ps.setString(1, id);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapRow(rs);
@@ -258,7 +285,7 @@ public class AgentStore {
         try (Connection conn = getConnection();
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT id, name, description, prompt_key, avatar, is_default, created_at, updated_at FROM agent ORDER BY is_default DESC, created_at ASC")) {
+                     "SELECT id, name, description, prompt_key, avatar, is_default, tool_names, created_at, updated_at FROM agent ORDER BY is_default DESC, created_at ASC")) {
             while (rs.next()) result.add(mapRow(rs));
         } catch (SQLException ignored) {}
         return result;
@@ -272,12 +299,39 @@ public class AgentStore {
                 rs.getString("prompt_key"),
                 rs.getString("avatar"),
                 rs.getInt("is_default") == 1,
+                parseToolNames(rs.getString("tool_names")),
                 rs.getLong("created_at"),
                 rs.getLong("updated_at")
         );
     }
 
+    private static List<String> parseToolNames(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            List<String> list = MAPPER.readValue(json, LIST_TYPE);
+            return list.isEmpty() ? null : list;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String serializeToolNames(List<String> toolNames) {
+        if (toolNames == null || toolNames.isEmpty()) return null;
+        try {
+            return MAPPER.writeValueAsString(toolNames);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public record Agent(String id, String name, String description,
                         String promptKey, String avatar, boolean isDefault,
-                        long createdAt, long updatedAt) {}
+                        List<String> toolNames,
+                        long createdAt, long updatedAt) {
+
+        /** toolNames 为 null 表示使用全部工具 */
+        public boolean hasToolFilter() {
+            return toolNames != null && !toolNames.isEmpty();
+        }
+    }
 }

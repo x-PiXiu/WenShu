@@ -1,5 +1,6 @@
 package com.example.rag.tools;
 
+import com.example.rag.blog.BlogStore;
 import com.example.rag.chat.ChatStore;
 import com.example.rag.config.AppConfiguration;
 import com.example.rag.prompt.PromptRegistry;
@@ -12,6 +13,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * RAG Agent 可调用的工具集
@@ -24,6 +26,7 @@ public class RagTools {
     private final AppConfiguration config;
     private MemoryStore memoryStore;
     private ChatStore chatStore;
+    private BlogStore blogStore;
 
     public RagTools(RagService ragService, WebSearcher webSearcher, AppConfiguration config) {
         this.ragService = ragService;
@@ -37,6 +40,10 @@ public class RagTools {
 
     public void setChatStore(ChatStore chatStore) {
         this.chatStore = chatStore;
+    }
+
+    public void setBlogStore(BlogStore blogStore) {
+        this.blogStore = blogStore;
     }
 
     // ===== Original Tools =====
@@ -298,6 +305,127 @@ public class RagTools {
         }
     }
 
+    // ===== Document CRUD Tools =====
+
+    @Tool("读取知识库中指定文档的完整文本内容")
+    public String readDocument(@P("文档文件名") String filename) {
+        try {
+            String content = ragService.readDocumentFile(filename);
+            if (content == null) return "文档不存在: " + filename;
+            if (content.length() > 8000) {
+                return content.substring(0, 8000) + "\n\n... (文档过长，已截断，总长度: " + content.length() + " 字符)";
+            }
+            return content;
+        } catch (Exception e) {
+            return "读取文档失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("创建新文档并自动索引到知识库。支持 Markdown 纯文本内容")
+    public String createDocument(@P("文档标题") String title,
+                                 @P("文档内容，支持 Markdown 格式") String content,
+                                 @P("文档类型：GENERAL/TECHNICAL/FAQ/ARTICLE，留空自动检测") String type) {
+        try {
+            if (title == null || title.isBlank()) return "文档标题不能为空";
+            if (content == null || content.isBlank()) return "文档内容不能为空";
+            String safeName = ragService.createDocumentFile(title, content, type);
+            return "文档已创建并索引: " + safeName;
+        } catch (Exception e) {
+            return "创建文档失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("更新知识库中已有文档的内容并重新索引")
+    public String updateDocument(@P("要更新的文档文件名") String filename,
+                                 @P("新的文档内容") String content) {
+        try {
+            if (filename == null || filename.isBlank()) return "文件名不能为空";
+            if (content == null || content.isBlank()) return "内容不能为空";
+            ragService.updateDocumentFile(filename, content);
+            return "文档已更新并重新索引: " + filename;
+        } catch (Exception e) {
+            return "更新文档失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("获取知识库中指定文档的详细信息，包括文件大小、类型、分块参数等")
+    public String getDocumentInfo(@P("文档文件名") String filename) {
+        try {
+            var allMeta = ragService.getDocumentMeta();
+            var meta = allMeta.get(filename);
+            if (meta == null) return "未找到文档元数据: " + filename;
+
+            java.nio.file.Path file = java.nio.file.Path.of("knowledge").resolve(filename);
+            StringBuilder sb = new StringBuilder();
+            sb.append("文档: ").append(filename).append("\n");
+            if (java.nio.file.Files.exists(file)) {
+                sb.append("文件大小: ").append(java.nio.file.Files.size(file)).append(" 字节\n");
+                sb.append("最后修改: ").append(formatTimestamp(java.nio.file.Files.getLastModifiedTime(file).toMillis())).append("\n");
+            }
+            sb.append("文档类型: ").append(meta.type()).append("\n");
+            sb.append("分块大小: ").append(meta.chunkSize()).append("\n");
+            sb.append("分块重叠: ").append(meta.chunkOverlap()).append("\n");
+            sb.append("检测方法: ").append(meta.detectionMethod()).append("\n");
+
+            var typeConfig = config.findDocTypeConfig(meta.type());
+            sb.append("句子重叠数: ").append(typeConfig.overlapSentences);
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "获取文档信息失败: " + e.getMessage();
+        }
+    }
+
+    // ===== Blog Tools =====
+
+    @Tool("搜索博客中已发布的文章，返回匹配的文章列表")
+    public String blogSearch(@P("搜索关键词") String query) {
+        if (blogStore == null) return "博客系统未启用";
+        try {
+            var articles = blogStore.searchArticles(query);
+            if (articles.isEmpty()) return "未找到匹配的博客文章";
+            StringBuilder sb = new StringBuilder("找到 ").append(articles.size()).append(" 篇相关文章：\n");
+            for (var a : articles) {
+                sb.append("- ").append(a.title());
+                if (a.category() != null && !a.category().isBlank()) sb.append(" [").append(a.category()).append("]");
+                if (a.summary() != null && !a.summary().isBlank()) sb.append("\n  摘要: ").append(a.summary());
+                sb.append("\n");
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "博客搜索失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("创建一篇新的博客文章（默认为草稿状态）")
+    public String blogWrite(@P("文章标题") String title,
+                            @P("文章内容，支持 Markdown 格式") String content,
+                            @P("文章分类，留空则不分类") String category) {
+        if (blogStore == null) return "博客系统未启用";
+        try {
+            if (title == null || title.isBlank()) return "文章标题不能为空";
+            if (content == null || content.isBlank()) return "文章内容不能为空";
+            var article = blogStore.createArticle(title, content, "md", category, List.of(), null, null);
+            return "博客文章已创建（草稿状态）\nID: " + article.id() + "\n标题: " + article.title();
+        } catch (Exception e) {
+            return "创建博客文章失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("使用 LLM 自动生成文章或文本的摘要")
+    public String blogSummarize(@P("需要生成摘要的文本内容") String content) {
+        try {
+            var chatModel = ragService.getChatModel();
+            if (chatModel == null) return "LLM 模型不可用";
+            String tmpl = PromptRegistry.getTemplate("article_summary");
+            String prompt = (tmpl != null && !tmpl.isBlank() ? tmpl
+                    : "请用1-2句话总结以下文章的核心内容，不超过100字，直接输出摘要文本，不要加引号或前缀：\n\n")
+                    + (content.length() > 2000 ? content.substring(0, 2000) : content);
+            return RagService.stripThinkTags(chatModel.chat(prompt));
+        } catch (Exception e) {
+            return "摘要生成失败: " + e.getMessage();
+        }
+    }
+
     // ===== Helpers =====
 
     private static String formatTimestamp(long ts) {
@@ -386,5 +514,81 @@ public class RagTools {
                 return x;
             }
         }.parse();
+    }
+
+    // ===== File System Tools =====
+
+    private java.nio.file.Path resolvePath(String path) {
+        java.nio.file.Path resolved = java.nio.file.Path.of(path);
+        if (!resolved.isAbsolute()) {
+            resolved = java.nio.file.Path.of(config.getWorkDir()).resolve(resolved);
+        }
+        return resolved.normalize();
+    }
+
+    @Tool("在指定路径写入文件。如果路径不存在会自动创建目录。支持绝对路径和相对路径（相对于工作目录）")
+    public String writeFile(@P("文件路径，如 /tmp/test.txt 或 output/report.md") String path,
+                            @P("要写入的文件内容") String content) {
+        try {
+            if (path == null || path.isBlank()) return "文件路径不能为空";
+            if (content == null) content = "";
+            java.nio.file.Path file = resolvePath(path);
+            java.nio.file.Files.createDirectories(file.getParent());
+            java.nio.file.Files.writeString(file, content);
+            return "文件已写入: " + file.toAbsolutePath();
+        } catch (Exception e) {
+            return "写入文件失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("读取指定路径的文件内容。支持绝对路径和相对路径")
+    public String readFile(@P("文件路径") String path) {
+        try {
+            if (path == null || path.isBlank()) return "文件路径不能为空";
+            java.nio.file.Path file = resolvePath(path);
+            if (!java.nio.file.Files.exists(file)) return "文件不存在: " + file.toAbsolutePath();
+            String content = java.nio.file.Files.readString(file);
+            if (content.length() > 8000) {
+                return content.substring(0, 8000) + "\n\n... (文件过长，已截断，总长度: " + content.length() + " 字符)";
+            }
+            return content;
+        } catch (Exception e) {
+            return "读取文件失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("列出指定目录下的文件和子目录。不传路径则列出当前工作目录")
+    public String listFiles(@P("目录路径，留空则使用默认工作目录") String path) {
+        try {
+            java.nio.file.Path dir = (path != null && !path.isBlank()) ? resolvePath(path) : java.nio.file.Path.of(config.getWorkDir());
+            if (!java.nio.file.Files.isDirectory(dir)) return "目录不存在: " + dir.toAbsolutePath();
+            StringBuilder sb = new StringBuilder("目录: ").append(dir.toAbsolutePath()).append("\n");
+            try (var stream = java.nio.file.Files.list(dir)) {
+                stream.limit(100).forEach(p -> {
+                    try {
+                        String type = java.nio.file.Files.isDirectory(p) ? "[DIR]" : "[FILE]";
+                        long size = java.nio.file.Files.isRegularFile(p) ? java.nio.file.Files.size(p) : 0;
+                        sb.append(type).append(" ").append(p.getFileName());
+                        if (size > 0) sb.append(" (").append(size).append(" bytes)");
+                        sb.append("\n");
+                    } catch (Exception ignored) {}
+                });
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return "列出文件失败: " + e.getMessage();
+        }
+    }
+
+    @Tool("创建目录，支持多级创建。路径不存在时自动创建所有父目录")
+    public String createDirectory(@P("要创建的目录路径") String path) {
+        try {
+            if (path == null || path.isBlank()) return "目录路径不能为空";
+            java.nio.file.Path dir = resolvePath(path);
+            java.nio.file.Files.createDirectories(dir);
+            return "目录已创建: " + dir.toAbsolutePath();
+        } catch (Exception e) {
+            return "创建目录失败: " + e.getMessage();
+        }
     }
 }
