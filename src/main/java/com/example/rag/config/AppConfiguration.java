@@ -85,7 +85,7 @@ public class AppConfiguration {
         public String title = "文枢博客";
         public String description = "基于 RAG 的智能博客";
         public int postsPerPage = 10;
-        public String adminPassword = "admin123";
+        public String adminPassword = "";
         public boolean allowComments = false;
         public boolean autoSummary = true;
     }

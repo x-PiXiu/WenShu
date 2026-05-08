@@ -14,15 +14,18 @@
 - **流式输出**：基于 SSE（Server-Sent Events）实现逐 Token 流式响应
 - **多轮对话**：支持对话历史上下文，自动生成摘要并存储为长期记忆
 - **智能体系统**：支持创建多个 AI 人格，每个智能体拥有独立的系统提示词和工具集
-- **Agent 工具调用**：内置 12+ 工具（知识库检索、Web 搜索、翻译、计算、文档对比等），LLM 可自主调用
+- **Agent 工具调用**：内置 12+ 工具（知识库检索、Web 搜索、翻译、计算、文件修改等），LLM 可自主调用，文件修改支持差异预览与审批
+- **多 LLM Provider 管理**：运行时创建、切换多个 LLM 配置，顶栏快速切换，无需重启
 - **Prompt 统一管理**：PromptRegistry 作为唯一事实来源，统一管理核心功能/工具/Agent 提示词，支持热更新
 - **文档类型管理**：不同文档类型（通用/技术/FAQ/日志/长文）采用差异化分块策略
 - **博客系统**：内置博客发布、分类、标签管理，支持文章智能问答，媒体文件管理
+- **知识图谱**：LLM 驱动的实体关系抽取，交互式力导向图可视化，支持图谱问答、关系推荐、增量合并、批量生成
 - **闪卡学习系统**：AI 自动生成闪卡，SM-2 间隔重复算法，翻卡/打字双模式学习，雷达图能力分析
 - **LLM 调用监控**：实时追踪 LLM 调用次数、Token 消耗、延迟分布等指标
 - **RAG 评估系统**：自动化检索质量评估，支持 Recall@K、Precision@K、MRR 等指标
 - **A2A 协议**：实现 Agent-to-Agent 协议，可与其他 AI Agent 节点协作
 - **MCP 服务器**：兼容 Model Context Protocol，支持 SSE + JSON-RPC 2.0
+- **集成管理**：统一管理 MCP 外部工具服务和远程 Agent 发现与配置
 - **支持多种文档格式**：PDF、DOCX、Markdown、纯文本
 - **前后端分离部署**：支持一体化部署和前后端分离部署
 
@@ -60,7 +63,8 @@
 │  ┌────────────────────────────────────────────────────────────┐  │
 │  │                      API Routes (70+)                      │  │
 │  │  /api/chat  /api/documents  /api/agents  /api/flashcard    │  │
-│  │  /api/blog  /api/admin/*   /api/settings  /a2a/v1  /mcp   │  │
+│  │  /api/blog  /api/graph  /api/admin/*   /api/settings      │  │
+│  │  /a2a/v1  /mcp   /api/llm-providers                      │  │
 │  └──────────────────────┬─────────────────────────────────────┘  │
 │                         │                                        │
 │  ┌──────────────────────▼─────────────────────────────────────┐  │
@@ -83,7 +87,10 @@
 │  │  ChatStore   │  ┌──────────────┐  │LlmCallStore  │          │
 │  │  AgentStore  │  │EvalResultStore│ │ LlmMonitor   │          │
 │  └──────────────┘  │RagEvaluator  │  └──────────────┘          │
-│                    └──────────────┘                              │
+│  ┌──────────────┐  └──────────────┘  ┌──────────────┐          │
+│  │KnowledgeGraph│                    │PendingFile   │          │
+│  │ Store+Extract│                    │  Changes     │          │
+│  └──────────────┘                    └──────────────┘          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,6 +109,7 @@
 | `tools/` | `RagTools` | Agent 可调用工具集（12+ @Tool 注解方法） |
 | `tools/` | `ToolEngine` | 工具规范提取与执行引擎 |
 | `tools/` | `WebSearcher` | Web 搜索集成（Tavily / SerpAPI / 自定义） |
+| `tools/` | `PendingFileChanges` | 文件修改暂存与审批（差异预览、应用、拒绝） |
 | `parser/` | `AutoDocumentParser` | 自动识别文件类型，使用 Tika/PDFBox 解析 |
 | `parser/` | `SemanticSplitter` | 语义感知的文档分块，支持可配置重叠 |
 | `parser/` | `DocumentTypeDetector` | 自动检测文档类型（通用/技术/FAQ/日志/长文） |
@@ -118,6 +126,8 @@
 | `service/` | `MemoryScorer` | 记忆重要性评分与衰减计算 |
 | `observability/` | `LlmCallStore` | LLM 调用日志持久化（Token、延迟、模型、完成原因） |
 | `observability/` | `LlmCallListener` | LLM 调用实时指标捕获 |
+| `graph/` | `KnowledgeGraphStore` | 知识图谱持久化（kg_graph/kg_node/kg_edge），支持增量合并、去重 |
+| `graph/` | `KnowledgeGraphExtractor` | LLM 驱动的实体关系抽取，可配置节点/边类型与上限 |
 | `a2a/` | `TaskManager` | A2A 协议任务生命周期管理 |
 | `a2a/` | `AgentCard` | A2A Agent 身份与能力描述 |
 | `mcp/` | `McpServerHandler` | MCP 服务器（SSE + JSON-RPC 2.0） |
@@ -165,6 +175,17 @@
 
 <!-- TODO: 上传截图 — RAG 评估仪表盘 -->
 ![RAG 评估](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/admin-memory.png)
+
+### 知识图谱
+
+<!-- TODO: 上传截图 — 知识图谱列表页，显示主图谱和文档图谱，批量生成进度条 -->
+![知识图谱列表](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/graph-list.png)
+
+<!-- TODO: 上传截图 — 知识图谱交互式可视化，力导向布局，节点类型着色，工具栏筛选 -->
+![图谱可视化](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/graph-canvas.png)
+
+<!-- TODO: 上传截图 — 节点详情面板，显示类型、描述、图谱问答、关系推荐 -->
+![图谱问答与关系推荐](https://github.com/CAH1314/WenShu/blob/master/docs/screenshots/graph-detail.png)
 
 ### 设置
 
@@ -482,6 +503,38 @@ npm run dev
 | POST | `/api/admin/eval/run` | 执行评估 |
 | GET | `/api/admin/eval/results` | 评估结果历史 |
 
+### 知识图谱
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/graph/generate` | 从单个文档生成图谱 |
+| POST | `/api/graph/generate-all` | 从全部文档批量生成图谱（SSE 流式进度） |
+| POST | `/api/graph/graphs/{id}/merge` | 增量合并文档到已有图谱 |
+| GET | `/api/graph/graphs` | 图谱列表 |
+| GET | `/api/graph/graphs/{id}` | 图谱详情（含节点和边） |
+| DELETE | `/api/graph/graphs/{id}` | 删除图谱 |
+| POST | `/api/graph/graphs/{id}/qa` | 图谱问答（LLM + 图谱上下文） |
+| POST | `/api/graph/graphs/{id}/suggest` | AI 推荐两个节点间的关系 |
+| GET | `/api/graph/graphs/{id}/export` | 导出图谱为 JSON |
+
+### 多 LLM Provider
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/llm-providers` | 获取所有 LLM Provider 配置 |
+| POST | `/api/llm-providers` | 创建新 Provider |
+| PUT | `/api/llm-providers/{id}` | 更新 Provider |
+| DELETE | `/api/llm-providers/{id}` | 删除 Provider |
+| POST | `/api/llm-providers/{id}/activate` | 切换为当前活跃 Provider |
+
+### 文件变更审批
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/file-change/{changeId}/diff` | 获取文件变更差异 |
+| POST | `/api/file-change/{changeId}/apply` | 应用文件变更 |
+| POST | `/api/file-change/{changeId}/reject` | 拒绝文件变更 |
+
 ### A2A 协议
 
 | 方法 | 路径 | 说明 |
@@ -528,7 +581,8 @@ WenShu/
 │   ├── tools/
 │   │   ├── RagTools.java                # Agent 工具集（12+ @Tool）
 │   │   ├── ToolEngine.java              # 工具引擎
-│   │   └── WebSearcher.java             # Web 搜索集成
+│   │   ├── WebSearcher.java             # Web 搜索集成
+│   │   └── PendingFileChanges.java      # 文件修改暂存与审批
 │   ├── parser/
 │   │   ├── AutoDocumentParser.java      # 文档自动解析
 │   │   ├── SemanticSplitter.java        # 语义分块器
@@ -557,6 +611,9 @@ WenShu/
 │   │   ├── AgentCard.java               # A2A Agent 卡片
 │   │   ├── Task.java                    # A2A 任务模型
 │   │   └── TaskManager.java             # A2A 任务管理
+│   ├── graph/
+│   │   ├── KnowledgeGraphStore.java     # 图谱持久化（kg_graph/kg_node/kg_edge）
+│   │   └── KnowledgeGraphExtractor.java # LLM 实体关系抽取引擎
 │   └── mcp/
 │       └── McpServerHandler.java        # MCP 服务器
 └── rag-knowledge-base-web/              # Vue 3 前端
@@ -567,21 +624,24 @@ WenShu/
     │   ├── App.vue                      # 应用主入口（侧边栏导航 + 路由）
     │   ├── main.ts
     │   ├── types/                       # TypeScript 类型定义
-    │   │   ├── chat.ts                  # 对话/消息/智能体类型
+    │   │   ├── chat.ts                  # 对话/消息/智能体/段落类型
     │   │   ├── blog.ts                  # 博客/分类/媒体类型
     │   │   ├── flashcard.ts             # 闪卡/卡组/评分类型
+    │   │   ├── graph.ts                 # 知识图谱/节点/边类型
     │   │   └── a2a.ts                   # A2A 协议类型
     │   ├── composables/                 # Vue Composables（API 客户端）
-    │   │   ├── useChat.ts               # 聊天 API（SSE 流式）
+    │   │   ├── useChat.ts               # 聊天 API（SSE 流式 + 分段思考块）
     │   │   ├── useAgents.ts             # 智能体管理
     │   │   ├── useSettings.ts           # 系统配置
     │   │   ├── useBlog.ts               # 博客 API
     │   │   ├── useFlashcard.ts          # 闪卡 API
     │   │   ├── useAdmin.ts              # 管理后台 API
     │   │   ├── useMedia.ts              # 媒体文件 API
-    │   │   └── useA2aClient.ts          # A2A 协议客户端
+    │   │   ├── useA2aClient.ts          # A2A 协议客户端
+    │   │   ├── useGraph.ts              # 知识图谱 API（生成/合并/问答/导出）
+    │   │   └── useLlmProviders.ts       # 多 LLM Provider CRUD 与切换
     │   └── components/
-    │       ├── ChatPanel.vue            # 对话面板（流式输出）
+    │       ├── ChatPanel.vue            # 对话面板（流式输出 + 分段思考块）
     │       ├── ConversationList.vue     # 对话列表
     │       ├── KnowledgeBase.vue        # 知识库管理
     │       ├── KnowledgeStats.vue       # 知识库统计
@@ -591,6 +651,16 @@ WenShu/
     │       ├── AgentCard.vue            # Agent 信息卡片
     │       ├── TaskList.vue             # A2A 任务列表
     │       ├── MarkdownRenderer.vue     # Markdown 渲染器
+    │       ├── chat/
+    │       │   └── FileDiffCard.vue     # 文件变更差异卡片（预览/应用/拒绝）
+    │       ├── graph/                   # 知识图谱模块
+    │       │   ├── GraphPage.vue        # 图谱列表与生成
+    │       │   ├── GraphCanvas.vue      # 交互式力导向图可视化
+    │       │   ├── GraphToolbar.vue     # 搜索、类型筛选、导出工具栏
+    │       │   ├── NodeDetailPanel.vue  # 节点详情 + 图谱问答 + 关系推荐
+    │       │   └── GraphQAPanel.vue     # 图谱问答面板
+    │       ├── integration/             # 集成管理
+    │       │   └── IntegrationPage.vue  # MCP 服务 + 远程 Agent 管理
     │       ├── flashcard/               # 闪卡模块
     │       │   ├── FlashcardPage.vue    # 卡组列表与生成
     │       │   ├── DeckDetail.vue       # 卡组详情
@@ -647,6 +717,10 @@ WenShu/
 ### Q: Prompt 模板如何修改
 
 在设置页面点击「Prompt 管理」进入专用 Prompt 编辑页面。按类别分组展示所有可编辑的 Prompt（系统 Agent / 核心功能 / 工具提示词 / 自定义 Agent），修改后点击「保存设置」立即生效。所有 Prompt 统一由 PromptRegistry 管理，包括自定义 Agent 的系统提示词。
+
+### Q: 知识图谱如何生成
+
+进入知识图谱页面，可以从单个文档或全部文档生成图谱。系统使用 LLM 自动抽取文档中的实体（人物、组织、概念、技术等）和关系，以力导向图可视化展示。支持增量合并新文档到已有图谱，也支持在图谱上进行智能问答和关系推荐。节点类型和关系类型可在 Prompt 管理中自定义。
 
 ---
 
