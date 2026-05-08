@@ -62,46 +62,66 @@
             <span v-else class="typing-dots"><span></span><span></span><span></span></span>
           </div>
           <template v-else>
-            <!-- Thinking block -->
-            <div
-              v-if="msg.thinking"
-              class="thinking-block"
-              :class="{ collapsed: !msg.thinkingExpanded }"
-            >
-              <div class="thinking-header" @click="toggleThinking(msg)">
-                <svg
-                  class="thinking-chevron"
-                  :class="{ rotated: msg.thinkingExpanded }"
-                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            <!-- Segment-based rendering: interleaved thinking/content blocks -->
+            <template v-if="msg.segments && msg.segments.length > 0">
+              <template v-for="seg in msg.segments" :key="seg.segIndex">
+                <!-- Thinking segment -->
+                <div
+                  v-if="seg.type === 'thinking'"
+                  class="thinking-block"
+                  :class="{ collapsed: !seg.expanded }"
                 >
-                  <polyline points="6 9 12 15 18 9"/>
-                </svg>
-                <span class="thinking-label">
-                  {{ msg.isThinking ? '思考中...' : '思考过程' }}
-                </span>
-                <span v-if="msg.isThinking" class="thinking-dots">
-                  <span></span><span></span><span></span>
-                </span>
-                <span v-else class="thinking-toggle-hint">（点击展开）</span>
+                  <div class="thinking-header" @click="seg.expanded = !seg.expanded">
+                    <svg
+                      class="thinking-chevron"
+                      :class="{ rotated: seg.expanded }"
+                      width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                    >
+                      <polyline points="6 9 12 15 18 9"/>
+                    </svg>
+                    <span class="thinking-label">
+                      {{ seg.isActive ? '思考中...' : '思考过程' }}
+                    </span>
+                    <span v-if="seg.isActive" class="thinking-dots">
+                      <span></span><span></span><span></span>
+                    </span>
+                    <span v-else class="thinking-toggle-hint">{{ seg.expanded ? '（点击收起）' : '（点击展开）' }}</span>
+                  </div>
+                  <div class="thinking-content">
+                    <MarkdownRenderer :content="seg.content" />
+                  </div>
+                </div>
+                <!-- Content segment -->
+                <div v-else-if="seg.content" :class="msg.role === 'user' ? 'user-text' : ''">
+                  <MarkdownRenderer v-if="msg.role === 'assistant'" :content="seg.content" />
+                  <template v-else>{{ seg.content }}</template>
+                </div>
+              </template>
+              <!-- Active thinking with no content yet -->
+              <div v-if="msg.isThinking && (!msg.segments || msg.segments.length === 0)" class="typing">
+                <span></span><span></span><span></span>
               </div>
-              <div class="thinking-content">
-                <MarkdownRenderer :content="msg.thinking" />
+            </template>
+            <!-- Fallback: no segments (plain content) -->
+            <template v-else>
+              <div v-if="msg.isThinking" class="typing">
+                <span></span><span></span><span></span>
               </div>
-            </div>
-            <!-- Loading inside thinking (no content yet) -->
-            <div v-if="msg.isThinking && !msg.thinking" class="typing">
-              <span></span><span></span><span></span>
-            </div>
-            <!-- Answer content -->
-            <div v-if="msg.content" :class="msg.role === 'user' ? 'user-text' : ''">
-              <MarkdownRenderer v-if="msg.role === 'assistant'" :content="msg.content" />
-              <template v-else>{{ msg.content }}</template>
-            </div>
+              <div v-if="msg.content" :class="msg.role === 'user' ? 'user-text' : ''">
+                <MarkdownRenderer v-if="msg.role === 'assistant'" :content="msg.content" />
+                <template v-else>{{ msg.content }}</template>
+              </div>
+            </template>
           </template>
           <!-- Streaming: lightweight retrieval count -->
           <div v-if="msg.loading && msg.sourceCount" class="retrieval-hint">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             <span>检索到 {{ msg.sourceCount }} 篇文章</span>
+          </div>
+          <!-- File change diffs -->
+          <div v-if="msg.fileChanges && msg.fileChanges.length > 0" class="file-changes-area">
+            <FileDiffCard v-for="fc in msg.fileChanges" :key="fc.changeId" :change="fc"
+                          @status-change="(id: string, status: string) => onFileChangeStatus(msg, id, status)" />
           </div>
           <!-- Completed: detailed expandable sources -->
           <div v-if="!msg.loading && msg.sources && msg.sources.length > 0" class="sources">
@@ -162,6 +182,7 @@
 import { ref, nextTick, watch, onMounted } from 'vue'
 import { NCollapse, NCollapseItem, NTag } from 'naive-ui'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import FileDiffCard from './chat/FileDiffCard.vue'
 import { useChat } from '../composables/useChat'
 import { useAgents } from '../composables/useAgents'
 import type { ChatMessage } from '../types/chat'
@@ -182,6 +203,13 @@ onMounted(() => {
   loadAgents()
   loadAvailableTools()
 })
+
+function onFileChangeStatus(msg: ChatMessage, changeId: string, status: string) {
+  if (msg.fileChanges) {
+    const fc = msg.fileChanges.find(f => f.changeId === changeId)
+    if (fc) fc.status = status as 'applied' | 'rejected'
+  }
+}
 
 
 function startCreateAgent() {
@@ -231,10 +259,6 @@ async function handleSend() {
   await sendQuestion(q)
 }
 
-function toggleThinking(msg: ChatMessage) {
-  msg.thinkingExpanded = !msg.thinkingExpanded
-}
-
 function copyMessage(msg: ChatMessage) {
   const text = msg.content || ''
   navigator.clipboard.writeText(text).then(() => {
@@ -262,6 +286,7 @@ watch(messages, () => {
 </script>
 
 <style scoped>
+.file-changes-area { margin-top: 8px; }
 
 /* Modal */
 .modal-overlay {
@@ -429,7 +454,7 @@ watch(messages, () => {
   40% { opacity: 1; transform: scale(1.1); }
 }
 .thinking-content {
-  max-height: 300px;
+  max-height: 600px;
   opacity: 1;
   padding: 4px 12px 10px;
   border-top: 1px solid #E8DDD0;

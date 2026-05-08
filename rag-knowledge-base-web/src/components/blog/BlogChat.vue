@@ -16,17 +16,28 @@
       </div>
       <div v-for="(msg, i) in messages" :key="i" :class="['chat-msg', msg.role]">
         <template v-if="msg.role === 'assistant'">
-          <!-- Thinking block -->
-          <div v-if="msg.thinking" class="thinking-block" :class="{ collapsed: !msg.thinkingExpanded }">
-            <div class="thinking-header" @click="msg.thinkingExpanded = !msg.thinkingExpanded">
-              <svg class="thinking-chevron" :class="{ rotated: msg.thinkingExpanded }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-              <span class="thinking-label">{{ msg.isThinking ? '思考中...' : '思考过程' }}</span>
-              <span v-if="msg.isThinking" class="thinking-dots"><span></span><span></span><span></span></span>
-            </div>
-            <div class="thinking-content">{{ msg.thinking }}</div>
-          </div>
-          <div v-if="msg.isThinking && !msg.thinking" class="thinking-dots"><span></span><span></span><span></span></div>
-          <div v-if="msg.content" class="msg-content"><MarkdownRenderer :content="msg.content" /></div>
+          <template v-if="msg.segments && msg.segments.length > 0">
+            <template v-for="seg in msg.segments" :key="seg.segIndex">
+              <div
+                v-if="seg.type === 'thinking'"
+                class="thinking-block"
+                :class="{ collapsed: !seg.expanded }"
+              >
+                <div class="thinking-header" @click="seg.expanded = !seg.expanded">
+                  <svg class="thinking-chevron" :class="{ rotated: seg.expanded }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                  <span class="thinking-label">{{ seg.isActive ? '思考中...' : '思考过程' }}</span>
+                  <span v-if="seg.isActive" class="thinking-dots"><span></span><span></span><span></span></span>
+                </div>
+                <div class="thinking-content">{{ seg.content }}</div>
+              </div>
+              <div v-else-if="seg.content" class="msg-content"><MarkdownRenderer :content="seg.content" /></div>
+            </template>
+            <div v-if="msg.isThinking && (!msg.segments || msg.segments.length === 0)" class="thinking-dots"><span></span><span></span><span></span></div>
+          </template>
+          <template v-else>
+            <div v-if="msg.isThinking" class="thinking-dots"><span></span><span></span><span></span></div>
+            <div v-if="msg.content" class="msg-content"><MarkdownRenderer :content="msg.content" /></div>
+          </template>
         </template>
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
@@ -45,9 +56,24 @@
 import { ref, nextTick } from 'vue'
 import MarkdownRenderer from '../MarkdownRenderer.vue'
 
+interface ThinkingSeg {
+  type: 'thinking'
+  content: string
+  expanded: boolean
+  isActive?: boolean
+  segIndex: number
+}
+interface ContentSeg {
+  type: 'content'
+  content: string
+  segIndex: number
+}
+type BlogSegment = ThinkingSeg | ContentSeg
+
 interface BlogMessage {
   role: 'user' | 'assistant'
   content: string
+  segments?: BlogSegment[]
   thinking?: string
   isThinking?: boolean
   thinkingExpanded?: boolean
@@ -70,36 +96,59 @@ async function scrollToBottom() {
 }
 
 function updateThinkingState(msg: BlogMessage, fullText: string) {
-  const openIdx = fullText.indexOf('<think')
-  if (openIdx === -1) {
-    msg.thinking = undefined
-    msg.isThinking = false
-    msg.content = fullText
-    return
+  const segments: BlogSegment[] = []
+  let segIdx = 0
+  let pos = 0
+
+  const thinkRegex = /<think[^>]*>([\s\S]*?)<\/think[^>]*>/g
+  let match
+
+  while ((match = thinkRegex.exec(fullText)) !== null) {
+    const before = fullText.substring(pos, match.index).replace(/\n{3,}/g, '\n\n').trim()
+    if (before) {
+      segments.push({ type: 'content', content: before, segIndex: segIdx++ })
+    }
+    const thinkingText = match[1].trim()
+    if (thinkingText) {
+      const existing = msg.segments?.find(s => s.segIndex === segIdx)
+      const expanded = existing?.type === 'thinking' ? existing.expanded : true
+      segments.push({ type: 'thinking', content: thinkingText, expanded, isActive: false, segIndex: segIdx++ })
+    }
+    pos = match.index + match[0].length
   }
 
-  const tagEnd = fullText.indexOf('>', openIdx)
-  if (tagEnd === -1) {
-    msg.isThinking = true
-    msg.content = ''
-    msg.thinking = ''
-    return
-  }
+  const remaining = fullText.substring(pos)
+  const lastOpen = remaining.lastIndexOf('<think')
+  let isThinking = false
 
-  const closeTag = '</think'
-  const closeIdx = fullText.indexOf(closeTag, tagEnd)
-  if (closeIdx === -1) {
-    msg.isThinking = true
-    msg.thinking = fullText.substring(tagEnd + 1)
-    msg.content = ''
+  if (lastOpen !== -1) {
+    const beforeIncomplete = remaining.substring(0, lastOpen).replace(/\n{3,}/g, '\n\n').trim()
+    if (beforeIncomplete) {
+      segments.push({ type: 'content', content: beforeIncomplete, segIndex: segIdx++ })
+    }
+    const partial = remaining.substring(lastOpen)
+    const gtIdx = partial.indexOf('>')
+    if (gtIdx !== -1) {
+      const thinkingText = partial.substring(gtIdx + 1).trim()
+      const existing = msg.segments?.find(s => s.segIndex === segIdx)
+      const expanded = existing?.type === 'thinking' ? existing.expanded : true
+      segments.push({ type: 'thinking', content: thinkingText, expanded, isActive: true, segIndex: segIdx++ })
+    }
+    isThinking = true
   } else {
-    msg.isThinking = false
-    msg.thinking = fullText.substring(tagEnd + 1, closeIdx).trim()
-    msg.thinkingExpanded = false
-    const afterClose = fullText.substring(closeIdx + closeTag.length)
-    const closeGt = afterClose.indexOf('>')
-    msg.content = closeGt !== -1 ? afterClose.substring(closeGt + 1).trim() : ''
+    const after = remaining.replace(/\n{3,}/g, '\n\n').trim()
+    if (after) {
+      segments.push({ type: 'content', content: after, segIndex: segIdx++ })
+    }
   }
+
+  msg.segments = segments
+  msg.isThinking = isThinking
+
+  // Legacy compat
+  const allThinking = segments.filter((s): s is ThinkingSeg => s.type === 'thinking').map(s => s.content).filter(Boolean)
+  msg.thinking = allThinking.length > 0 ? allThinking.join('\n\n') : undefined
+  msg.content = segments.filter((s): s is ContentSeg => s.type === 'content').map(s => s.content).join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 async function send() {
@@ -175,6 +224,12 @@ async function send() {
           updateThinkingState(assistantMsg, fullText)
           assistantMsg.isThinking = false
           assistantMsg.status = undefined
+          // Collapse all thinking segments
+          if (assistantMsg.segments) {
+            for (const seg of assistantMsg.segments) {
+              if (seg.type === 'thinking') { seg.expanded = false; seg.isActive = false }
+            }
+          }
         } else if (eventType === 'error') {
           const errData = JSON.parse(eventData)
           assistantMsg.content = 'Error: ' + (errData.error || 'Unknown error')

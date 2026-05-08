@@ -37,15 +37,18 @@
         <main class="main-area">
           <!-- Top bar -->
           <header class="topbar">
-            <div v-if="currentPage === 'chat'" class="topbar-agent">
-              <span class="agent-avatar">{{ currentAgent?.avatar || '🤖' }}</span>
-              <select class="agent-select" :value="currentAgent?.id || ''" @change="onTopbarAgentChange">
-                <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.avatar }} {{ a.name }}</option>
-              </select>
+            <div class="topbar-brand">
+              <span class="topbar-text-logo">文枢<span class="dot">·</span>藏书阁</span>
+              <h1 v-if="currentPage !== 'chat'" class="topbar-title">{{ pageTitle }}</h1>
             </div>
-            <h1 v-else class="topbar-title">{{ pageTitle }}</h1>
             <div class="topbar-actions">
               <template v-if="currentPage === 'chat'">
+                <div class="topbar-agent">
+                  <span class="agent-avatar">{{ currentAgent?.avatar || '🤖' }}</span>
+                  <select class="agent-select" :value="currentAgent?.id || ''" @change="onTopbarAgentChange">
+                    <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.avatar }} {{ a.name }}</option>
+                  </select>
+                </div>
                 <button class="llm-switch-btn" @click="showLlmDropdown = !showLlmDropdown" :title="'当前: ' + (activeProvider?.name || stats?.llmModel || '')">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v1H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5h1a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-5V5a3 3 0 0 0-3-3z"/></svg>
                   <span class="llm-switch-label">{{ activeProvider?.modelName || stats?.llmModel || 'LLM' }}</span>
@@ -619,6 +622,15 @@ body {
   background: #FFFFFF;
   flex-shrink: 0;
 }
+.topbar-brand { display: flex; align-items: center; gap: 12px; }
+.topbar-text-logo {
+  font-size: 18px; font-weight: 700; color: #3D3028;
+  letter-spacing: 1px; white-space: nowrap;
+  background: linear-gradient(135deg, #D97B2B, #E8913A);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.topbar-text-logo .dot { -webkit-text-fill-color: #C8B8A8; }
 .topbar-title { font-size: 17px; font-weight: 600; color: #3D3028; margin: 0; }
 .topbar-agent { display: flex; align-items: center; gap: 10px; }
 .agent-avatar {

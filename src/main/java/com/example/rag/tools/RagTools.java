@@ -335,14 +335,25 @@ public class RagTools {
         }
     }
 
-    @Tool("更新知识库中已有文档的内容并重新索引")
+    @Tool("更新知识库中已有文档的内容并重新索引。会先展示差异供用户确认后再执行更新。")
     public String updateDocument(@P("要更新的文档文件名") String filename,
                                  @P("新的文档内容") String content) {
         try {
             if (filename == null || filename.isBlank()) return "文件名不能为空";
             if (content == null || content.isBlank()) return "内容不能为空";
-            ragService.updateDocumentFile(filename, content);
-            return "文档已更新并重新索引: " + filename;
+
+            // 读取旧内容，暂存变更
+            String oldContent = ragService.readDocumentFile(filename);
+            if (oldContent == null) return "文档不存在: " + filename;
+
+            java.nio.file.Path file = java.nio.file.Path.of("knowledge").resolve(filename).normalize();
+            var change = PendingFileChanges.stage(file.toAbsolutePath().toString(), oldContent, content, "document");
+            int oldLines = oldContent.split("\n").length;
+            int newLines = content.split("\n").length;
+            return "文档修改已暂存，等待用户确认。changeId=" + change.id()
+                    + " file=" + filename
+                    + " 旧=" + oldLines + "行 新=" + newLines + "行"
+                    + " PENDING_CONFIRM=true";
         } catch (Exception e) {
             return "更新文档失败: " + e.getMessage();
         }
@@ -526,16 +537,23 @@ public class RagTools {
         return resolved.normalize();
     }
 
-    @Tool("在指定路径写入文件。如果路径不存在会自动创建目录。支持绝对路径和相对路径（相对于工作目录）")
+    @Tool("在指定路径写入文件。如果路径不存在会自动创建目录。支持绝对路径和相对路径（相对于工作目录）。会先展示内容差异供用户确认后再执行写入。")
     public String writeFile(@P("文件路径，如 /tmp/test.txt 或 output/report.md") String path,
                             @P("要写入的文件内容") String content) {
         try {
             if (path == null || path.isBlank()) return "文件路径不能为空";
             if (content == null) content = "";
             java.nio.file.Path file = resolvePath(path);
-            java.nio.file.Files.createDirectories(file.getParent());
-            java.nio.file.Files.writeString(file, content);
-            return "文件已写入: " + file.toAbsolutePath();
+            String oldContent = java.nio.file.Files.exists(file) ? java.nio.file.Files.readString(file) : "";
+
+            // 所有文件变更（新建和修改）都暂存，等待用户确认
+            var change = PendingFileChanges.stage(file.toAbsolutePath().toString(), oldContent, content, "write");
+            int oldLines = oldContent.isEmpty() ? 0 : oldContent.split("\n").length;
+            int newLines = content.isEmpty() ? 0 : content.split("\n").length;
+            return "文件变更已暂存，等待用户确认。changeId=" + change.id()
+                    + " path=" + file.toAbsolutePath()
+                    + " 旧=" + oldLines + "行 新=" + newLines + "行"
+                    + " PENDING_CONFIRM=true";
         } catch (Exception e) {
             return "写入文件失败: " + e.getMessage();
         }

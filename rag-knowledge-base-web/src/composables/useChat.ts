@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import type { ChatMessage, Conversation, RagAnswer, SourceInfo } from '../types/chat'
+import type { ChatMessage, Conversation, RagAnswer, SourceInfo, FileChangeInfo, MessageSegment } from '../types/chat'
 import { useAgents } from './useAgents'
 
 // Module-level state: shared across all components that call useChat()
@@ -70,10 +70,13 @@ export function useChat() {
           // Parse <think/> tags from persisted content for assistant messages
           if (m.role === 'assistant' && m.content) {
             updateThinkingState(msg, m.content)
-            // Auto-collapse completed thinking blocks for history view
-            if (msg.thinking) {
-              msg.thinkingExpanded = false
+            // Auto-collapse all thinking segments for history view
+            if (msg.segments) {
+              for (const seg of msg.segments) {
+                if (seg.type === 'thinking') seg.expanded = false
+              }
             }
+            msg.thinkingExpanded = false
           }
           return msg
         })
@@ -221,6 +224,18 @@ export function useChat() {
         } else if (eventType === 'status') {
           const status = JSON.parse(eventData)
           assistantMsg.status = { phase: status.phase, message: status.message, segments: status.segments }
+        } else if (eventType === 'file_diff') {
+          const diff = JSON.parse(eventData)
+          const change: FileChangeInfo = {
+            changeId: diff.changeId,
+            path: diff.path,
+            tool: diff.tool,
+            oldLines: diff.oldLines,
+            newLines: diff.newLines,
+            status: 'pending',
+          }
+          if (!assistantMsg.fileChanges) assistantMsg.fileChanges = []
+          assistantMsg.fileChanges.push(change)
         } else if (eventType === 'sources') {
           const sources = JSON.parse(eventData) as SourceInfo[]
           // Always save sources data (fallback if done event is missed)
@@ -238,6 +253,16 @@ export function useChat() {
           const doneData = JSON.parse(eventData)
           fullText = doneData.answer || fullText
           updateThinkingState(assistantMsg, fullText)
+          // Collapse all thinking segments after stream completes
+          if (assistantMsg.segments) {
+            for (const seg of assistantMsg.segments) {
+              if (seg.type === 'thinking') {
+                seg.expanded = false
+                seg.isActive = false
+              }
+            }
+          }
+          assistantMsg.thinkingExpanded = false
           if (doneData.sources && Array.isArray(doneData.sources) && doneData.sources.length > 0) {
             assistantMsg.sources = doneData.sources
           }
@@ -252,7 +277,34 @@ export function useChat() {
           if (doneData.conversationId && !currentConversationId.value) {
             currentConversationId.value = doneData.conversationId
           }
-          loadConversations()
+          // Update conversation list locally without triggering a full API reload.
+          // loadConversations() causes reactive cascade that interrupts diff card UI.
+          const convId = doneData.conversationId || currentConversationId.value
+          if (convId) {
+            const conv = conversations.value.find(c => c.id === convId)
+            if (conv && conv.title === '新对话') {
+              const userMsg = messages.value.find(m => m.role === 'user')
+              if (userMsg) {
+                conv.title = userMsg.content.length > 20
+                      ? userMsg.content.substring(0, 20) + '...'
+                      : userMsg.content
+              }
+            } else if (!conv) {
+              // Insert stub for new conversation
+              const userMsg = messages.value.find(m => m.role === 'user')
+              conversations.value.unshift({
+                id: convId,
+                title: userMsg
+                  ? (userMsg.content.length > 20
+                      ? userMsg.content.substring(0, 20) + '...'
+                      : userMsg.content)
+                  : '新对话',
+                agentId: null,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              })
+            }
+          }
         } else if (eventType === 'error') {
           const errData = JSON.parse(eventData)
           assistantMsg.content = `Error: ${errData.error}`
@@ -300,51 +352,86 @@ export function useChat() {
   }
 
   /**
-   * Parse the accumulated text for <think/> blocks.
-   * When <think is found: extract thinking content, show it expanded.
-   * When </think is found: auto-collapse thinking, show the actual answer.
+   * Parse <think/> blocks from accumulated streaming text into ordered segments.
+   * Each thinking block becomes its own independent collapsible segment,
+   * preserving the order they appear in the LLM output.
+   *
+   * Layout example:
+   *   [Thinking 1 - collapsed] → Content 1 → [Thinking 2 - collapsed] → Content 2
    */
   function updateThinkingState(msg: ChatMessage, fullText: string) {
-    const openIdx = fullText.indexOf('<think')
-    if (openIdx === -1) {
-      // No thinking tag: content is the answer directly
-      msg.thinking = undefined
-      msg.isThinking = false
-      msg.content = fullText
-      return
-    }
+    const segments: MessageSegment[] = []
+    let segIndex = 0
+    let pos = 0
 
-    // Find the end of the opening tag (e.g., <think...>)
-    const tagEnd = fullText.indexOf('>', openIdx)
-    if (tagEnd === -1) {
-      // Opening tag is incomplete (streaming in progress)
-      msg.isThinking = true
-      msg.content = ''
-      msg.thinking = ''
-      return
-    }
+    // Regex to find all <think...>...</think...> blocks
+    const thinkRegex = /<think[^>]*>([\s\S]*?)<\/think[^>]*>/g
+    let match
 
-    // Find closing tag
-    const closeTag = '</think'
-    const closeIdx = fullText.indexOf(closeTag, tagEnd)
-
-    if (closeIdx === -1) {
-      // Still thinking
-      msg.isThinking = true
-      msg.thinking = fullText.substring(tagEnd + 1)
-      msg.content = ''
-    } else {
-      // Thinking complete — auto-collapse on first detection
-      msg.isThinking = false
-      const thinkingText = fullText.substring(tagEnd + 1, closeIdx).trim()
-      msg.thinking = thinkingText
-      if (msg.thinkingExpanded !== false) {
-        msg.thinkingExpanded = false
+    while ((match = thinkRegex.exec(fullText)) !== null) {
+      // Content before this thinking block
+      const before = fullText.substring(pos, match.index).replace(/\n{3,}/g, '\n\n').trim()
+      if (before) {
+        segments.push({ type: 'content', content: before, segIndex: segIndex++ })
       }
-      const afterClose = fullText.substring(closeIdx + closeTag.length)
-      const closeGt = afterClose.indexOf('>')
-      msg.content = closeGt !== -1 ? afterClose.substring(closeGt + 1).trim() : ''
+
+      // The thinking block itself
+      const thinkingText = match[1].trim()
+      if (thinkingText) {
+        // Preserve expanded state from existing segment at same index
+        const existing = msg.segments?.find(s => s.segIndex === segIndex)
+        const expanded = existing?.type === 'thinking' ? existing.expanded : true
+        segments.push({ type: 'thinking', content: thinkingText, expanded, isActive: false, segIndex: segIndex++ })
+      }
+
+      pos = match.index + match[0].length
     }
+
+    // Check for incomplete think block at end (still streaming)
+    const remaining = fullText.substring(pos)
+    const lastOpen = remaining.lastIndexOf('<think')
+    let isThinking = false
+
+    if (lastOpen !== -1) {
+      // Content before the incomplete think block
+      const beforeIncomplete = remaining.substring(0, lastOpen).replace(/\n{3,}/g, '\n\n').trim()
+      if (beforeIncomplete) {
+        segments.push({ type: 'content', content: beforeIncomplete, segIndex: segIndex++ })
+      }
+
+      const partial = remaining.substring(lastOpen)
+      const gtIdx = partial.indexOf('>')
+      if (gtIdx !== -1) {
+        const thinkingText = partial.substring(gtIdx + 1).trim()
+        // Preserve expanded state or default to true (active block)
+        const existing = msg.segments?.find(s => s.segIndex === segIndex)
+        const expanded = existing?.type === 'thinking' ? existing.expanded : true
+        segments.push({ type: 'thinking', content: thinkingText, expanded, isActive: true, segIndex: segIndex++ })
+      }
+      isThinking = true
+    } else {
+      // No incomplete think block — remaining is pure content
+      const after = remaining.replace(/\n{3,}/g, '\n\n').trim()
+      if (after) {
+        segments.push({ type: 'content', content: after, segIndex: segIndex++ })
+      }
+    }
+
+    msg.segments = segments
+    msg.isThinking = isThinking
+
+    // For backward compat (copy actions, etc.), also set legacy fields
+    const allThinking = segments
+      .filter((s): s is Extract<typeof s, { type: 'thinking' }> => s.type === 'thinking')
+      .map(s => s.content)
+      .filter(Boolean)
+    msg.thinking = allThinking.length > 0 ? allThinking.join('\n\n') : undefined
+    msg.content = segments
+      .filter((s): s is Extract<typeof s, { type: 'content' }> => s.type === 'content')
+      .map(s => s.content)
+      .join('\n\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
   }
 
   function clearMessages() {
@@ -375,6 +462,12 @@ export function useChat() {
       lastMsg.loading = false
       lastMsg.isThinking = false
       lastMsg.content = lastMsg.content || lastMsg.thinking || '(已停止生成)'
+      // Collapse all thinking segments
+      if (lastMsg.segments) {
+        for (const seg of lastMsg.segments) {
+          if (seg.type === 'thinking') { seg.expanded = false; seg.isActive = false }
+        }
+      }
     }
     loading.value = false
   }

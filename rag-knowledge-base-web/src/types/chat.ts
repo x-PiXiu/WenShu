@@ -1,21 +1,51 @@
 // Chat & Settings Types
 
+// Ordered message segments — interleaved thinking/content blocks
+export interface ThinkingSegment {
+  type: 'thinking'
+  content: string
+  expanded: boolean
+  isActive?: boolean        // true while still streaming this block
+  segIndex: number          // stable index for key/identity tracking
+}
+
+export interface ContentSegment {
+  type: 'content'
+  content: string
+  segIndex: number
+}
+
+export type MessageSegment = ThinkingSegment | ContentSegment
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   sources?: SourceInfo[]
   timestamp: number
   loading?: boolean
-  // Thinking block fields (for streaming LLM output with <think/> tags)
-  thinking?: string
+  // Segment-based rendering: ordered interleaved thinking/content blocks
+  segments?: MessageSegment[]
   isThinking?: boolean
+  // Legacy single-block fields (kept for backward compat with BlogChat)
+  thinking?: string
   thinkingExpanded?: boolean
   // Retrieval status feedback
   status?: { phase: string; message: string; segments?: number }
   // Retrieved article count during streaming (before detailed sources are shown)
   sourceCount?: number
+  // File change diff cards
+  fileChanges?: FileChangeInfo[]
   // UI state
   _copied?: boolean
+}
+
+export interface FileChangeInfo {
+  changeId: string
+  path: string
+  tool: string
+  oldLines: number
+  newLines: number
+  status: 'pending' | 'applied' | 'rejected'
 }
 
 export interface SourceInfo {

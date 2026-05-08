@@ -11,6 +11,7 @@ import com.example.rag.chat.AgentStore;
 import com.example.rag.chat.ChatStore;
 import com.example.rag.graph.KnowledgeGraphExtractor;
 import com.example.rag.graph.KnowledgeGraphStore;
+import com.example.rag.tools.PendingFileChanges;
 import com.example.rag.config.AppConfiguration;
 import com.example.rag.config.LlmProviderStore;
 import com.example.rag.eval.EvalResultStore;
@@ -322,6 +323,46 @@ public class RagApplication {
         app.post("/api/chat", RagApplication::handleChat);
         app.post("/api/chat/stream", RagApplication::handleChatStream);
         app.post("/api/chat/cancel", RagApplication::handleChatCancel);
+
+        // ===== File Change Confirmation API =====
+        app.get("/api/file-change/{id}/diff", ctx -> {
+            String id = ctx.pathParam("id");
+            var data = com.example.rag.tools.PendingFileChanges.getDiffData(id);
+            if (data != null) ctx.json(data);
+            else ctx.status(404).json(Map.of("error", "Change not found"));
+        });
+
+        app.post("/api/file-change/{id}/apply", ctx -> {
+            String id = ctx.pathParam("id");
+            try {
+                var change = com.example.rag.tools.PendingFileChanges.apply(id);
+                if (change != null) {
+                    // 如果是知识库文档，触发重新索引
+                    if ("document".equals(change.type())) {
+                        try {
+                            java.nio.file.Path file = java.nio.file.Path.of(change.path());
+                            String filename = file.getFileName().toString();
+                            ragService.removeDocumentMeta(filename);
+                            ragService.reindexAll("knowledge/");
+                        } catch (Exception e) {
+                            System.err.println("[WARN] Reindex after apply failed: " + e.getMessage());
+                        }
+                    }
+                    ctx.json(Map.of("status", "ok", "path", change.path()));
+                } else {
+                    ctx.status(404).json(Map.of("error", "Change not found or already resolved"));
+                }
+            } catch (Exception e) {
+                ctx.status(500).json(Map.of("error", e.getMessage()));
+            }
+        });
+
+        app.post("/api/file-change/{id}/reject", ctx -> {
+            String id = ctx.pathParam("id");
+            var change = com.example.rag.tools.PendingFileChanges.reject(id);
+            if (change != null) ctx.json(Map.of("status", "ok"));
+            else ctx.status(404).json(Map.of("error", "Change not found"));
+        });
 
         // ===== Settings API =====
         app.get("/api/settings", ctx -> ctx.json(config));
@@ -1379,12 +1420,36 @@ public class RagApplication {
                 })
                 .onToolExecuted(toolExecution -> {
                     lastTokenTime.set(System.currentTimeMillis());
+                    String toolName = toolExecution.request().name();
+                    String toolResult = toolExecution.result();
                     try {
                         writer.write("event: status\ndata: " + MAPPER.writeValueAsString(
                                 Map.of("phase", "tool_call",
-                                       "message", "调用工具: " + toolExecution.request().name())) + "\n\n");
+                                       "message", "调用工具: " + toolName)) + "\n\n");
+                        // 检测文件修改暂存事件
+                        if (toolResult != null && toolResult.contains("PENDING_CONFIRM=true")) {
+                            String changeId = extractTagValue(toolResult, "changeId=");
+                            if (changeId != null) {
+                                // Use PendingFileChanges for reliable data instead of string parsing
+                                Map<String, Object> diffData = PendingFileChanges.getDiffData(changeId);
+                                if (diffData != null) {
+                                    Map<String, Object> diffEvent = new LinkedHashMap<>();
+                                    diffEvent.put("changeId", changeId);
+                                    diffEvent.put("path", diffData.get("path"));
+                                    diffEvent.put("tool", toolName);
+                                    diffEvent.put("oldLines", diffData.get("oldLines"));
+                                    diffEvent.put("newLines", diffData.get("newLines"));
+                                    writer.write("event: file_diff\ndata: " + MAPPER.writeValueAsString(diffEvent) + "\n\n");
+                                    System.err.println("[DEBUG] file_diff sent: changeId=" + changeId + " path=" + diffData.get("path"));
+                                } else {
+                                    System.err.println("[WARN] file_diff: changeId=" + changeId + " not found in PendingFileChanges");
+                                }
+                            }
+                        }
                         writer.flush();
-                    } catch (Exception ignored) {}
+                    } catch (Exception e) {
+                        System.err.println("[ERROR] onToolExecuted failed: " + e.getMessage());
+                    }
                 })
                 .onCompleteResponse(response -> {
                     watchdog.shutdownNow();
@@ -1817,6 +1882,15 @@ public class RagApplication {
             ctx.json(Map.of("status", "ok", "message", "Deleted: " + filename,
                     "warning", "Reindex failed: " + e.getMessage()));
         }
+    }
+
+    private static String extractTagValue(String text, String tag) {
+        int start = text.indexOf(tag);
+        if (start < 0) return null;
+        start += tag.length();
+        int end = start;
+        while (end < text.length() && text.charAt(end) != ' ' && text.charAt(end) != '\n') end++;
+        return text.substring(start, end);
     }
 
     private static String nvl(String newVal, String defaultVal) {
