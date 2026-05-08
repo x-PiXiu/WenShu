@@ -348,19 +348,31 @@ public class KnowledgeGraphStore {
                     }
                 }
 
-                // Update stats
+                // Update stats and read final counts in the same transaction
+                int finalNodeCount = extraction.nodes().size();
+                int finalEdgeCount = 0;
+                for (var edge : extraction.edges()) {
+                    if (edge.source() != null && edge.target() != null
+                            && idMap.containsKey(edge.source()) && idMap.containsKey(edge.target())) {
+                        finalEdgeCount++;
+                    }
+                }
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE kg_graph SET node_count = (SELECT COUNT(*) FROM kg_node WHERE graph_id = ?), " +
-                                "edge_count = (SELECT COUNT(*) FROM kg_edge WHERE graph_id = ?), " +
+                        "UPDATE kg_graph SET node_count = ?, " +
+                                "edge_count = ?, " +
                                 "status = 'ready', updated_at = ? WHERE id = ?")) {
-                    ps.setString(1, graphId);
-                    ps.setString(2, graphId);
+                    ps.setInt(1, finalNodeCount);
+                    ps.setInt(2, finalEdgeCount);
                     ps.setLong(3, System.currentTimeMillis());
                     ps.setString(4, graphId);
                     ps.executeUpdate();
                 }
 
                 conn.commit();
+
+                // Return the Graph directly from the in-transaction data — no second query needed
+                return new Graph(graphId, title, sourceFile, extraction.summary(),
+                        finalNodeCount, finalEdgeCount, "ready", now, System.currentTimeMillis());
             } catch (SQLException e) {
                 conn.rollback();
                 throw new RuntimeException("importFromExtraction failed: " + e.getMessage(), e);
@@ -369,8 +381,6 @@ public class KnowledgeGraphStore {
             throw new RuntimeException("importFromExtraction failed: " + e.getMessage(), e);
         }
         }
-
-        return getGraph(graphId);
     }
 
     /**
@@ -465,19 +475,39 @@ public class KnowledgeGraphStore {
                 }
 
                 // Update graph stats
+                try (PreparedStatement countNodes = conn.prepareStatement("SELECT COUNT(*) FROM kg_node WHERE graph_id = ?")) {
+                    countNodes.setString(1, graphId);
+                    try (ResultSet rs = countNodes.executeQuery()) {
+                        if (rs.next()) addedNodes = rs.getInt(1);
+                    }
+                }
+                try (PreparedStatement countEdges = conn.prepareStatement("SELECT COUNT(*) FROM kg_edge WHERE graph_id = ?")) {
+                    countEdges.setString(1, graphId);
+                    try (ResultSet rs = countEdges.executeQuery()) {
+                        if (rs.next()) addedEdges = rs.getInt(1);
+                    }
+                }
                 try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE kg_graph SET node_count = (SELECT COUNT(*) FROM kg_node WHERE graph_id = ?), " +
-                                "edge_count = (SELECT COUNT(*) FROM kg_edge WHERE graph_id = ?), " +
+                        "UPDATE kg_graph SET node_count = ?, " +
+                                "edge_count = ?, " +
                                 "status = 'ready', updated_at = ? WHERE id = ?")) {
-                    ps.setString(1, graphId);
-                    ps.setString(2, graphId);
+                    ps.setInt(1, addedNodes);
+                    ps.setInt(2, addedEdges);
                     ps.setLong(3, now);
                     ps.setString(4, graphId);
                     ps.executeUpdate();
                 }
 
                 conn.commit();
-                System.out.println("[GRAPH] Merged into " + graphId + ": +" + addedNodes + " nodes, +" + addedEdges + " edges (from " + sourceFile + ")");
+                System.out.println("[GRAPH] Merged into " + graphId + ": " + addedNodes + " total nodes, " + addedEdges + " total edges (from " + sourceFile + ")");
+
+                // Read the updated graph title/description within the same connection before returning
+                try (PreparedStatement ps = conn.prepareStatement("SELECT * FROM kg_graph WHERE id = ?")) {
+                    ps.setString(1, graphId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next()) return mapGraph(rs);
+                    }
+                }
             } catch (SQLException e) {
                 conn.rollback();
                 System.err.println("[WARN] mergeIntoGraph failed: " + e.getMessage());
